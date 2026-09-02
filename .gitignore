@@ -9,5 +9,3 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
-apps/web/node_modules/
-apps/web/dist/

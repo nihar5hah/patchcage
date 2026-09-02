@@ -10,8 +10,6 @@
 **/__pycache__
 **/*.py[cod]
 *.egg-info
-apps/web/node_modules
-apps/web/dist
 demo_projects
 tests
 docs
