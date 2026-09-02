@@ -119,8 +119,20 @@ async def test_openai_compat_parses_valid_action(monkeypatch: pytest.MonkeyPatch
     assert body["messages"][0]["role"] == "system"
 
 
+@pytest.mark.parametrize(
+    "error_body",
+    [
+        {"error": "unknown field response_format"},
+        {
+            "error": {
+                "message": "This model does not support json_schema or json_object"
+            }
+        },
+    ],
+)
 async def test_openai_compat_retries_without_json_object_on_400(
     monkeypatch: pytest.MonkeyPatch,
+    error_body: dict[str, object],
 ) -> None:
     monkeypatch.setenv("PATCHCAGE_MODEL_API_KEY", KEY)
     bodies: list[dict[str, object]] = []
@@ -129,7 +141,7 @@ async def test_openai_compat_retries_without_json_object_on_400(
         body = json.loads(request.content)
         bodies.append(body)
         if "response_format" in body:
-            return httpx.Response(400, json={"error": "unknown field response_format"})
+            return httpx.Response(400, json=error_body)
         return _completion(_tool_payload())
 
     action = await _gateway(handler).next_action(_context())
@@ -138,6 +150,33 @@ async def test_openai_compat_retries_without_json_object_on_400(
     assert len(bodies) == 2
     assert bodies[0]["response_format"] == {"type": "json_object"}
     assert "response_format" not in bodies[1]
+
+
+@pytest.mark.parametrize(
+    "error_body",
+    [
+        {"error": "invalid model"},
+        {"error": {"message": "max_tokens too large"}},
+        None,
+    ],
+)
+async def test_openai_compat_does_not_retry_unrelated_400(
+    monkeypatch: pytest.MonkeyPatch,
+    error_body: dict[str, object] | None,
+) -> None:
+    monkeypatch.setenv("PATCHCAGE_MODEL_API_KEY", KEY)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if error_body is None:
+            return httpx.Response(400)
+        return httpx.Response(400, json=error_body)
+
+    with pytest.raises(ModelUnavailable, match="HTTP 400"):
+        await _gateway(handler).next_action(_context())
+    assert calls == 1
 
 
 async def test_openai_compat_retries_once_after_malformed_output(

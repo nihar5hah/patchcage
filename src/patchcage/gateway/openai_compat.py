@@ -21,6 +21,20 @@ from patchcage.harness.context import AgentContext
 DEFAULT_API_KEY_ENV = "PATCHCAGE_MODEL_API_KEY"
 MAX_ACTION_TOKENS = 1_200
 MAX_RESPONSE_CHARS = 1_000_000
+_ERROR_BODY_CAP = 4_096
+_RESPONSE_FORMAT_HINTS = ("response_format", "json_object")
+
+
+def _rejects_response_format(response: httpx.Response) -> bool:
+    """True when a 400 looks like the server rejected json_object.
+
+    llama.cpp / vLLM / some Ollama builds reject ``response_format``. Other
+    400s (unknown model, context overflow) must fail closed without a retry
+    that drops the JSON envelope. Inspect a capped body; never log it.
+    """
+    chunk = response.content[:_ERROR_BODY_CAP].decode("utf-8", errors="replace").lower()
+    return any(hint in chunk for hint in _RESPONSE_FORMAT_HINTS)
+
 
 _SYSTEM_PROMPT = """\
 You are the investigation model inside PatchCage, a least-privilege
@@ -145,7 +159,11 @@ class OpenAICompatGateway:
         except httpx.TimeoutException as exc:
             raise ModelUnavailable(f"model endpoint timed out: {self._base_url}") from exc
         except httpx.HTTPStatusError as exc:
-            if json_object and exc.response.status_code == 400:
+            if (
+                json_object
+                and exc.response.status_code == 400
+                and _rejects_response_format(exc.response)
+            ):
                 return await self._post(messages, json_object=False)
             raise ModelUnavailable(
                 f"model endpoint returned HTTP {exc.response.status_code}"
