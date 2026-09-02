@@ -8,7 +8,7 @@ Patches only leave the cage after compile, scanner, security-oracle, and unit
 checks pass on a **clean replay** of the snapshot, and a human approves.
 
 This repository is the Python engine plus `patchcage-engine`, the JSON-lines
-subprocess CLI a TypeScript agent wrapper will drive. You can also call the
+subprocess CLI the TypeScript agent under `cli/` drives. You can also call the
 harness from Python (or pytest).
 
 ## What it does
@@ -104,6 +104,7 @@ runtime/python-demo/      Docker image, rules, oracles, check runners
 manifests/                project manifests
 demo_projects/            authorized vulnerable fixtures
 scripts/                  image build + demo git repo helper
+cli/                      vendored pi fork (TypeScript agent, bin name patchcage)
 tests/
 ```
 
@@ -126,6 +127,10 @@ Do not use this against systems you do not own or are not authorized to test.
 
 **0.1.0** — engine library and `patchcage-engine` CLI. Honest MVP: a run that
 passes verification exits at `awaiting_approval`; `export --run <dir> --out
-<dir>` writes the evidence bundle and `final.patch`. A TypeScript agent
-wrapper is planned separately. First-run disclosure, `/sandbox`, and the
-installer are not in this cut.
+<dir>` writes the evidence bundle and `final.patch`. The TypeScript agent CLI
+is a vendored pi fork under `cli/`. After `cd cli && npm install
+--ignore-scripts && npm run build`, invoke it as
+`node packages/coding-agent/dist/bundle/cli.js` (npm bin name `patchcage`).
+The standalone `dist/patchcage` binary is only from `build:binary`, not the
+default build. First-run disclosure, `/sandbox`, and the installer are not in
+this cut.
