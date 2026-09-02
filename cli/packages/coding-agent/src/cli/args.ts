@@ -32,6 +32,7 @@ export interface Args {
 	tools?: string[];
 	excludeTools?: string[];
 	noTools?: boolean;
+	ackUnsandboxed?: boolean;
 	noBuiltinTools?: boolean;
 	extensions?: string[];
 	noExtensions?: boolean;
@@ -132,6 +133,8 @@ export function parseArgs(args: string[]): Args {
 			result.models = args[++i].split(",").map((s) => s.trim());
 		} else if (arg === "--no-tools" || arg === "-nt") {
 			result.noTools = true;
+		} else if (arg === "--ack-unsandboxed") {
+			result.ackUnsandboxed = true;
 		} else if (arg === "--no-builtin-tools" || arg === "-nbt") {
 			result.noBuiltinTools = true;
 		} else if ((arg === "--tools" || arg === "-t") && i + 1 < args.length) {
@@ -293,6 +296,7 @@ ${chalk.bold("Options:")}
   --models <patterns>            Comma-separated model patterns for Ctrl+P cycling
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
   --no-tools, -nt                Disable all tools by default (built-in and extension)
+  --ack-unsandboxed              This run only: allow tools without a saved unsandboxed disclosure
   --no-builtin-tools, -nbt       Disable built-in tools by default but keep extension/custom tools enabled
   --tools, -t <tools>            Comma-separated allowlist of tool names to enable
                                  Applies to built-in, extension, and custom tools

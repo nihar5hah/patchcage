@@ -57,7 +57,7 @@ The parent `.gitignore` ignores `.patchcage/` wholesale. Engine policy treats `.
 ## Verified at pin
 
 - `node packages/coding-agent/dist/bundle/cli.js --help` prints `patchcage`, not `pi`.
-- Print-mode smoke against local Ollama (`http://127.0.0.1:11434/v1`, dummy `apiKey`) used `gpt-oss:120b-cloud`. That tag is **cloud-routed**: Ollama on localhost still proxies the request to ollama.com. Several other `*-cloud` tags listed in `ollama list` (`glm-4.6:cloud`, `glm-4.7:cloud`, `qwen3-coder:480b-cloud`, …) return HTTP 410 retired. No non-cloud local-weights tag was installed on this machine, and nothing was listening on llama.cpp `:8080`. Phase 4 "local model" here means the OpenAI-compatible endpoint was localhost; the weights for this smoke were not.
+- Print-mode smoke against local Ollama (`http://127.0.0.1:11434/v1`, dummy `apiKey`) used `gpt-oss:120b-cloud`. That tag is **cloud-routed**: Ollama on localhost still proxies the request to ollama.com. Several other `*-cloud` tags listed in `ollama list` (`glm-4.6:cloud`, `glm-4.7:cloud`, `qwen3-coder:480b-cloud`, …) return HTTP 410 retired. This machine still has **only** `:cloud` tags; llama.cpp `:8080` is empty. Phase 4 "local model" means the OpenAI-compatible endpoint was localhost; the weights for that smoke were not. To re-verify with on-machine weights, install a tag **without** `:cloud` (do not pull a large model just for this), add it to `~/.patchcage/agent/models.json`, and rerun print-mode as in the root README Status section. The CLI has no `--base-url`.
 
 ## Expected-red coding-agent vitest
 

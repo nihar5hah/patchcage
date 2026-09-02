@@ -394,6 +394,12 @@ describe("parseArgs", () => {
 			expect(result.noTools).toBe(true);
 		});
 
+		test("parses --ack-unsandboxed flag", () => {
+			const result = parseArgs(["--ack-unsandboxed"]);
+			expect(result.ackUnsandboxed).toBe(true);
+			expect(result.unknownFlags.size).toBe(0);
+		});
+
 		test("parses -nt shorthand", () => {
 			const result = parseArgs(["-nt"]);
 			expect(result.noTools).toBe(true);

@@ -115,6 +115,8 @@ export interface Settings {
 	collapseChangelog?: boolean; // Show condensed changelog after update (use /changelog for full)
 	enableInstallTelemetry?: boolean; // default: true - anonymous version/update ping after changelog-detected updates
 	enableAnalytics?: boolean; // default: false - opt-in analytics data sharing
+	unsandboxedDisclosureAcknowledged?: boolean; // PatchCage: first-run unsandboxed agent-mode disclosure
+	modelSetupSkipped?: boolean; // PatchCage: user skipped the no-model preset picker
 	trackingId?: string; // analytics tracking identifier, generated when analytics is enabled
 	packages?: PackageSource[]; // Array of npm/git package sources (string or object with filtering)
 	extensions?: string[]; // Array of local extension file paths or directories
@@ -1032,6 +1034,26 @@ export class SettingsManager {
 			this.globalSettings.trackingId = randomUUID();
 			this.markModified("trackingId");
 		}
+		this.save();
+	}
+
+	getUnsandboxedDisclosureAcknowledged(): boolean {
+		return this.settings.unsandboxedDisclosureAcknowledged === true;
+	}
+
+	setUnsandboxedDisclosureAcknowledged(acknowledged: boolean): void {
+		this.globalSettings.unsandboxedDisclosureAcknowledged = acknowledged;
+		this.markModified("unsandboxedDisclosureAcknowledged");
+		this.save();
+	}
+
+	getModelSetupSkipped(): boolean {
+		return this.settings.modelSetupSkipped === true;
+	}
+
+	setModelSetupSkipped(skipped: boolean): void {
+		this.globalSettings.modelSetupSkipped = skipped;
+		this.markModified("modelSetupSkipped");
 		this.save();
 	}
 

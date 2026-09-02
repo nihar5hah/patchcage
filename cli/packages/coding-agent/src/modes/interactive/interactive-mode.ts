@@ -46,6 +46,7 @@ import {
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { spawn } from "child_process";
+import { runModelPresetOnboarding } from "../../cli/patchcage-onboarding.ts";
 import {
 	APP_NAME,
 	APP_TITLE,
@@ -54,6 +55,7 @@ import {
 	getAuthPath,
 	getDebugLogPath,
 	getDocsPath,
+	getModelsPath,
 	VERSION,
 } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
@@ -91,6 +93,7 @@ import {
 } from "../../core/model-resolver.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
+import { applyPresetToSession } from "../../core/patchcage-agent-mode.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
@@ -2997,6 +3000,11 @@ export class InteractiveMode {
 				await this.handleModelCommand(searchTerm);
 				return;
 			}
+			if (text === "/setup-model" || text.startsWith("/setup-model ")) {
+				this.editor.setText("");
+				await this.handleSetupModelCommand();
+				return;
+			}
 			if (text === "/thinking" || text.startsWith("/thinking ")) {
 				const searchTerm = text.startsWith("/thinking ") ? text.slice(10).trim() : undefined;
 				this.editor.setText("");
@@ -4842,6 +4850,40 @@ export class InteractiveMode {
 		}
 
 		this.showModelSelector(searchTerm);
+	}
+
+	private async handleSetupModelCommand(): Promise<void> {
+		this.ui.stop();
+		let errorMessage: string | undefined;
+		let statusMessage: string | undefined;
+		try {
+			const result = await runModelPresetOnboarding(this.settingsManager, {
+				persistSkip: false,
+				modelsPath: getModelsPath(),
+			});
+			if (result.kind === "error") {
+				errorMessage = result.error;
+				return;
+			}
+			if (result.kind === "skip") return;
+			try {
+				await applyPresetToSession(this.session, result.providerId, result.modelId);
+				this.settingsManager.setModelSetupSkipped(false);
+				await this.settingsManager.flush();
+				statusMessage = `Model: ${result.providerId}/${result.modelId}`;
+			} catch (error) {
+				errorMessage = error instanceof Error ? error.message : String(error);
+			}
+		} finally {
+			this.ui.start();
+			this.ui.requestRender(true);
+		}
+		if (statusMessage) {
+			this.footer.invalidate();
+			this.updateEditorBorderColor();
+			this.showStatus(statusMessage);
+		}
+		if (errorMessage) this.showError(errorMessage);
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<any> | undefined> {

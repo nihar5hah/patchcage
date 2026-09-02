@@ -30,10 +30,20 @@ import { resolveCredentialForPrint } from "./cli/credential-print.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
+import { promptUnsandboxedDisclosure, runModelPresetOnboarding } from "./cli/patchcage-onboarding.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
-import { APP_NAME, ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.ts";
+import {
+	APP_NAME,
+	ENV_SESSION_DIR,
+	expandTildePath,
+	getAgentDir,
+	getBundledPromptsDir,
+	getModelsPath,
+	getPackageDir,
+	VERSION,
+} from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
@@ -48,6 +58,15 @@ import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dis
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
+import {
+	applyPresetToSession,
+	decideUnsandboxedDisclosure,
+	PATCHCAGE_SYSTEM_APPENDIX,
+	shouldSkipUnsandboxedDisclosure,
+	UNSANDBOXED_DISCLOSURE_DECLINED,
+	UNSANDBOXED_DISCLOSURE_FAIL_CLOSED,
+	withBundledPromptTemplates,
+} from "./core/patchcage-agent-mode.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
@@ -658,6 +677,28 @@ export async function main(args: string[], options?: MainOptions) {
 		time("firstTimeSetup");
 	}
 
+	if (!shouldSkipUnsandboxedDisclosure(parsed)) {
+		const disclosure = decideUnsandboxedDisclosure({
+			acknowledged: startupSettingsManager.getUnsandboxedDisclosureAcknowledged(),
+			toolsEnabled: parsed.noTools !== true,
+			interactive: appMode === "interactive",
+			ackThisRun: parsed.ackUnsandboxed === true,
+		});
+		if (disclosure === "fail-closed") {
+			console.error(UNSANDBOXED_DISCLOSURE_FAIL_CLOSED);
+			process.exit(1);
+		}
+		if (disclosure === "need-interactive-prompt") {
+			const accepted = await promptUnsandboxedDisclosure(startupSettingsManager);
+			if (!accepted) {
+				console.error(UNSANDBOXED_DISCLOSURE_DECLINED);
+				process.exit(0);
+			}
+			startupSettingsManager.setUnsandboxedDisclosureAcknowledged(true);
+			await startupSettingsManager.flush();
+		}
+	}
+
 	if (appMode === "interactive" && parsed.useTheme !== undefined) {
 		startupSettingsManager.applyOverrides({ theme: parsed.useTheme });
 	}
@@ -761,7 +802,11 @@ export async function main(args: string[], options?: MainOptions) {
 			resourceLoaderOptions: {
 				additionalExtensionPaths: resolvedExtensionPaths,
 				additionalSkillPaths: resolvedSkillPaths,
-				additionalPromptTemplatePaths: resolvedPromptTemplatePaths,
+				additionalPromptTemplatePaths: withBundledPromptTemplates(
+					resolvedPromptTemplatePaths,
+					getBundledPromptsDir(),
+					parsed.noPromptTemplates !== true,
+				),
 				additionalThemePaths: resolvedThemePaths,
 				noExtensions: parsed.noExtensions,
 				noSkills: parsed.noSkills,
@@ -770,6 +815,7 @@ export async function main(args: string[], options?: MainOptions) {
 				noContextFiles: parsed.noContextFiles,
 				systemPrompt: parsed.systemPrompt,
 				appendSystemPrompt: parsed.appendSystemPrompt,
+				appendSystemPromptOverride: (base) => [PATCHCAGE_SYSTEM_APPENDIX, ...base],
 				extensionFactories,
 			},
 		});
@@ -902,6 +948,27 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 	time("createAgentSession");
+
+	if (appMode === "interactive" && !session.model && !settingsManager.getModelSetupSkipped()) {
+		const result = await runModelPresetOnboarding(settingsManager, {
+			persistSkip: true,
+			modelsPath: getModelsPath(),
+		});
+		if (result.kind === "applied") {
+			try {
+				await applyPresetToSession(session, result.providerId, result.modelId);
+				settingsManager.setModelSetupSkipped(false);
+				await settingsManager.flush();
+			} catch (error) {
+				console.error(error instanceof Error ? error.message : String(error));
+			}
+		} else if (result.kind === "skip" && result.persist) {
+			settingsManager.setModelSetupSkipped(true);
+			await settingsManager.flush();
+		} else if (result.kind === "error") {
+			console.error(result.error);
+		}
+	}
 
 	if (appMode !== "interactive" && !session.model) {
 		console.error(chalk.red(formatNoModelsAvailableMessage()));

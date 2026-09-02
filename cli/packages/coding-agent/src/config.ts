@@ -442,6 +442,11 @@ export function getDocsPath(): string {
 	return resolve(join(getPackageDir(), "docs"));
 }
 
+/** Bundled PatchCage prompt templates shipped with the package */
+export function getBundledPromptsDir(): string {
+	return resolve(join(getPackageDir(), "prompts"));
+}
+
 /** Get path to examples directory */
 export function getExamplesPath(): string {
 	return resolve(join(getPackageDir(), "examples"));

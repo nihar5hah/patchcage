@@ -1,5 +1,7 @@
 .venv/
 .venvs/
+# Host engine runs + agent project config. Never commit. In-container
+# /workspace/.patchcage is a different control dir, not this tree.
 .patchcage/
 .superpowers/
 __pycache__/

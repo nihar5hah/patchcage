@@ -105,11 +105,27 @@ manifests/                project manifests
 demo_projects/            authorized vulnerable fixtures
 scripts/                  image build + demo git repo helper
 cli/                      vendored pi fork (TypeScript agent, bin name patchcage)
+docs/roadmap.md           remaining phases (5–7)
 tests/
 ```
 
 Python conventions: frozen pydantic `StrictModel`, `from __future__ import
 annotations`, 100-char ruff, pytest-asyncio auto.
+
+### `.patchcage/` namespaces
+
+Same name, three different owners. Do not merge or rename them for Phase 5
+(the agent still uses pi's `configDir`; see `cli/UPSTREAM.md`).
+
+| Path | Owner |
+| --- | --- |
+| `~/.patchcage/agent/` (or `PATCHCAGE_CODING_AGENT_DIR`) | Agent secrets and sessions (`auth.json`) |
+| `<cwd>/.patchcage/runs/` | Engine evidence (`patchcage-engine` default `--run-dir`) |
+| `<cwd>/.patchcage/settings.json` | Agent **project** config if you run the TUI in that repo |
+| `/workspace/.patchcage/` **inside the sandbox** | Harness control dir; snapshot-blocked, not on the host |
+
+The repo `.gitignore` ignores host `.patchcage/` wholesale. Engine cleanup
+removes labeled Docker resources; it does not `rm -rf` the host directory.
 
 ## Security model (short)
 
@@ -125,12 +141,47 @@ Do not use this against systems you do not own or are not authorized to test.
 
 ## Status
 
-**0.1.0** — engine library and `patchcage-engine` CLI. Honest MVP: a run that
+**0.1.0** — Phases 1–5. Engine library and `patchcage-engine` CLI: a run that
 passes verification exits at `awaiting_approval`; `export --run <dir> --out
 <dir>` writes the evidence bundle and `final.patch`. The TypeScript agent CLI
 is a vendored pi fork under `cli/`. After `cd cli && npm install
 --ignore-scripts && npm run build`, invoke it as
 `node packages/coding-agent/dist/bundle/cli.js` (npm bin name `patchcage`).
 The standalone `dist/patchcage` binary is only from `build:binary`, not the
-default build. First-run disclosure, `/sandbox`, and the installer are not in
-this cut.
+default build. Agent mode is unsandboxed; first-run disclosure, model presets,
+and the defensive prompt library are in the CLI
+([docs/agent-mode.md](docs/agent-mode.md)). Next:
+[docs/roadmap.md](docs/roadmap.md) (`/sandbox`, then installer).
+
+A localhost OpenAI-compatible URL is not enough to prove weights stay on the
+machine. Ollama tags ending in `:cloud` proxy to ollama.com. To smoke a
+true-local model: `ollama list` (or `curl -s http://127.0.0.1:11434/v1/models`)
+and pick a tag **without** `:cloud`, or use llama.cpp on `:8080`. Register it
+in `~/.patchcage/agent/models.json` (same shape as
+`cli/packages/coding-agent/docs/models.md`; that vendor doc still says
+`~/.pi`):
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://localhost:11434/v1",
+      "api": "openai-completions",
+      "apiKey": "ollama",
+      "models": [{ "id": "<local-tag>" }]
+    }
+  }
+}
+```
+
+The CLI has no `--base-url`. Then:
+
+```bash
+cd cli
+node packages/coding-agent/dist/bundle/cli.js --print --no-tools --no-session \
+  --offline --provider ollama --model '<local-tag>' --api-key dummy \
+  'Reply with the single word pong.'
+```
+
+Do not `ollama pull` a large model just to tick this box. This checkout's
+Ollama has only `:cloud` tags, so that smoke is not re-run here.
