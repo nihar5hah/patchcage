@@ -47,6 +47,7 @@ import {
 import chalk from "chalk";
 import { spawn } from "child_process";
 import { runModelPresetOnboarding } from "../../cli/patchcage-onboarding.ts";
+import { showStartupSelector } from "../../cli/startup-ui.ts";
 import {
 	APP_NAME,
 	APP_TITLE,
@@ -94,6 +95,19 @@ import {
 import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import { applyPresetToSession } from "../../core/patchcage-agent-mode.ts";
+import {
+	buildExportArgs,
+	buildRunArgs,
+	describeFailure,
+	EXPORTS_DIR,
+	engineEnv,
+	isRepoRoot,
+	narrateEvent,
+	resolveEngineBinary,
+	resolveSandboxInputs,
+	runEngine,
+	SANDBOX_USAGE,
+} from "../../core/patchcage-sandbox.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
@@ -506,6 +520,9 @@ export class InteractiveMode {
 
 	// Track pending bash components (shown in pending area, moved to chat on submit)
 	private pendingBashComponents: BashExecutionComponent[] = [];
+
+	// /sandbox: aborting SIGINTs the engine child (engine maps that to `cancelled`)
+	private sandboxAbort?: AbortController;
 
 	// Auto-compaction state
 	private autoCompactionEscapeHandler?: () => void;
@@ -2867,7 +2884,9 @@ export class InteractiveMode {
 		// Set up handlers on defaultEditor - they use this.editor for text access
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
-			if (this.session.isStreaming) {
+			if (this.sandboxAbort) {
+				this.sandboxAbort.abort();
+			} else if (this.session.isStreaming) {
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			} else if (this.session.isBashRunning) {
 				this.session.abortBash();
@@ -3003,6 +3022,12 @@ export class InteractiveMode {
 			if (text === "/setup-model" || text.startsWith("/setup-model ")) {
 				this.editor.setText("");
 				await this.handleSetupModelCommand();
+				return;
+			}
+			if (text === "/sandbox" || text.startsWith("/sandbox ")) {
+				const findingArg = text.startsWith("/sandbox ") ? text.slice(9).trim() : undefined;
+				this.editor.setText("");
+				await this.handleSandboxCommand(findingArg);
 				return;
 			}
 			if (text === "/thinking" || text.startsWith("/thinking ")) {
@@ -4884,6 +4909,107 @@ export class InteractiveMode {
 			this.showStatus(statusMessage);
 		}
 		if (errorMessage) this.showError(errorMessage);
+	}
+
+	/**
+	 * `/sandbox [finding.yml]` (Phase 6). Spawns `patchcage-engine run`, narrates
+	 * its JSON-lines events, and only calls `export` after the user approves.
+	 * The chat agent itself stays unsandboxed.
+	 */
+	private async handleSandboxCommand(findingArg: string | undefined): Promise<void> {
+		const repoRoot = process.cwd();
+		if (!isRepoRoot(repoRoot)) {
+			this.showError(`/sandbox must run from a git repository root. ${SANDBOX_USAGE}`);
+			return;
+		}
+		const inputs = resolveSandboxInputs(repoRoot, findingArg);
+		if (!inputs.ok) {
+			this.showError(inputs.error);
+			return;
+		}
+		const model = this.session.model;
+		if (!model) {
+			this.showError("No model selected. Use /model or /setup-model first.");
+			return;
+		}
+		if (model.api !== "openai-completions" && model.api !== "openai-responses") {
+			this.showError(`/sandbox needs an OpenAI-compatible model endpoint; ${model.provider} uses ${model.api}.`);
+			return;
+		}
+		let apiKey: string | undefined;
+		let modelEndpoint = model.baseUrl;
+		try {
+			const auth = await this.session.modelRuntime.getAuth(model);
+			apiKey = auth?.auth.apiKey;
+			if (auth?.auth.baseUrl) modelEndpoint = auth.auth.baseUrl;
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+			return;
+		}
+
+		const runId = crypto.randomBytes(8).toString("hex");
+		const runDir = path.join(repoRoot, ".patchcage", "runs", runId);
+		const bin = resolveEngineBinary();
+		const abort = new AbortController();
+		this.sandboxAbort = abort;
+		this.showStatus(`sandbox: starting ${bin} (run ${runId}); Esc cancels`);
+		const outcome = await runEngine({
+			bin,
+			args: buildRunArgs({
+				repo: repoRoot,
+				manifest: inputs.manifest,
+				finding: inputs.finding,
+				runDir,
+				modelEndpoint,
+				modelId: model.id,
+			}),
+			cwd: repoRoot,
+			env: engineEnv(process.env, apiKey),
+			signal: abort.signal,
+			onEvent: (event) => {
+				const line = narrateEvent(event);
+				if (line) this.showStatus(line);
+			},
+		});
+		this.sandboxAbort = undefined;
+
+		if (outcome.result?.status !== "awaiting_approval") {
+			this.showError(describeFailure(outcome));
+			return;
+		}
+
+		this.ui.stop();
+		let approve: boolean | undefined;
+		try {
+			approve = await showStartupSelector(
+				this.settingsManager,
+				`Sandbox run ${runId} passed verification (run dir: ${runDir}).\nExport final.patch + evidence.json?`,
+				[
+					{ label: "Export", value: true },
+					{ label: "Discard (keep run dir, write nothing)", value: false },
+				],
+			);
+		} finally {
+			this.ui.start();
+			this.ui.requestRender(true);
+		}
+		if (approve !== true) {
+			this.showStatus(`sandbox: not exported. Run dir kept at ${runDir}`);
+			return;
+		}
+		const outDir = path.join(repoRoot, EXPORTS_DIR, runId);
+		const exported = await runEngine({
+			bin,
+			args: buildExportArgs(runDir, outDir),
+			cwd: repoRoot,
+			env: engineEnv(process.env, undefined),
+			onEvent: () => {},
+		});
+		if (exported.result?.status === "exported") {
+			this.showStatus(`sandbox: exported final.patch + evidence.json to ${outDir}`);
+		} else {
+			this.showError(describeFailure(exported));
+		}
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<any> | undefined> {

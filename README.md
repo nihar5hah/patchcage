@@ -105,7 +105,7 @@ manifests/                project manifests
 demo_projects/            authorized vulnerable fixtures
 scripts/                  image build + demo git repo helper
 cli/                      vendored pi fork (TypeScript agent, bin name patchcage)
-docs/roadmap.md           remaining phases (5–7)
+docs/roadmap.md           phase status; remaining work (installer)
 tests/
 ```
 
@@ -141,7 +141,7 @@ Do not use this against systems you do not own or are not authorized to test.
 
 ## Status
 
-**0.1.0** — Phases 1–5. Engine library and `patchcage-engine` CLI: a run that
+**0.1.0** — Phases 1–6. Engine library and `patchcage-engine` CLI: a run that
 passes verification exits at `awaiting_approval`; `export --run <dir> --out
 <dir>` writes the evidence bundle and `final.patch`. The TypeScript agent CLI
 is a vendored pi fork under `cli/`. After `cd cli && npm install
@@ -149,9 +149,10 @@ is a vendored pi fork under `cli/`. After `cd cli && npm install
 `node packages/coding-agent/dist/bundle/cli.js` (npm bin name `patchcage`).
 The standalone `dist/patchcage` binary is only from `build:binary`, not the
 default build. Agent mode is unsandboxed; first-run disclosure, model presets,
-and the defensive prompt library are in the CLI
+the defensive prompt library, and `/sandbox` (spawns `patchcage-engine`,
+export gated on approval) are in the CLI
 ([docs/agent-mode.md](docs/agent-mode.md)). Next:
-[docs/roadmap.md](docs/roadmap.md) (`/sandbox`, then installer).
+[docs/roadmap.md](docs/roadmap.md) (installer).
 
 A localhost OpenAI-compatible URL is not enough to prove weights stay on the
 machine. Ollama tags ending in `:cloud` proxy to ollama.com. To smoke a

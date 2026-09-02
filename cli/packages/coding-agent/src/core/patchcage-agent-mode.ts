@@ -7,7 +7,8 @@ import { ModelConfig, type ModelsJsonProvider } from "./model-config.ts";
 export type DisclosureDecision = "allow" | "need-interactive-prompt" | "fail-closed";
 
 export const UNSANDBOXED_DISCLOSURE_NOTICE = `This PatchCage agent session is not sandboxed. It can read, write, and run
-commands with your user permissions. /sandbox is not available yet.
+commands with your user permissions. Use /sandbox to run a finding through the
+Docker cage instead; only that path is verified and export-gated.
 
 Continue only if you accept that.`;
 
@@ -17,7 +18,7 @@ export const UNSANDBOXED_DISCLOSURE_FAIL_CLOSED =
 export const UNSANDBOXED_DISCLOSURE_DECLINED = "Declined unsandboxed agent mode. Exiting.";
 
 export const PATCHCAGE_SYSTEM_APPENDIX = `You are running as PatchCage's coding agent in unsandboxed agent mode.
-This session is not sandboxed. Do not claim it is sandboxed or that /sandbox is available.
+This session is not sandboxed. Do not claim your own tools are sandboxed. The user can run /sandbox to send a finding through the PatchCage Docker cage; you cannot invoke it.
 
 Authorized defensive security work only: review findings, explain issues, harden code, and write PoCs the user requested for systems they own or are authorized to test. Refuse criminal activity, unauthorized access, and exploitation of third-party systems.`;
 
