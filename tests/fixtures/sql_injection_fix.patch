@@ -1,0 +1,11 @@
+diff --git a/src/demo_app/search.py b/src/demo_app/search.py
+index 2d722f5..df6b48f 100644
+--- a/src/demo_app/search.py
++++ b/src/demo_app/search.py
+@@ -17,4 +17,5 @@ def create_database() -> sqlite3.Connection:
+ 
+ 
+ def search_products(connection: sqlite3.Connection, query: str) -> list[sqlite3.Row]:
+-    return list(connection.execute(f"SELECT id, name FROM products WHERE name LIKE '%{query}%'"))
++    pattern = f"%{query}%"
++    return list(connection.execute("SELECT id, name FROM products WHERE name LIKE ?", (pattern,)))

@@ -1,0 +1,11 @@
+rules:
+  - id: patchcage.python.sql-injection.formatted-query
+    message: User-controlled data is interpolated into a SQL execution call.
+    severity: ERROR
+    languages:
+      - python
+    pattern-regex: "execute\\s*\\(\\s*f[\\\"']"
+    metadata:
+      cwe:
+        - CWE-89
+      category: security

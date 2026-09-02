@@ -1,0 +1,83 @@
+version: 1
+
+project:
+  name: flask-sql-injection-demo
+  language: python
+
+runtime:
+  # Local tag only. The sandbox resolves this to a digest and never pulls.
+  image: patchcage/python-flask-demo:local
+  workdir: /workspace
+
+scope:
+  readable:
+    - README.md
+    - src/**
+    - tests/**
+    - pyproject.toml
+  writable:
+    - src/**
+  blocked:
+    - .git/**
+    - .patchcage/**
+    - .env*
+    - "**/*.pem"
+    - "**/*.key"
+
+checks:
+  compile:
+    argv: [python, -m, compileall, -q, src]
+    timeout_seconds: 30
+    baseline_expectation: passed
+    patched_expectation: passed
+
+  scanner:
+    argv:
+      # --error: exit 1 when findings exist, so the host can evaluate
+      # finding_present / finding_absent from the exit code alone.
+      - semgrep
+      - scan
+      - --error
+      - --config
+      - /opt/patchcage/rules/sql-injection.yml
+      - --metrics
+      - "off"
+      - --json
+    timeout_seconds: 60
+    baseline_expectation: finding_present
+    patched_expectation: finding_absent
+
+  unit:
+    argv:
+      - python
+      - /opt/patchcage/runners/run_unit.py
+      - /workspace
+      - tests/unit
+    timeout_seconds: 60
+    baseline_expectation: passed
+    patched_expectation: passed
+
+  security:
+    argv:
+      - python
+      - /opt/patchcage/oracles/sql_injection_oracle.py
+      - --workspace
+      - /workspace
+    timeout_seconds: 60
+    baseline_expectation: vulnerability_reproduced
+    patched_expectation: passed
+    baseline_required_marker: PATCHCAGE_VULNERABILITY_REPRODUCED
+
+limits:
+  model_turns: 12
+  tool_calls: 25
+  invalid_outputs: 3
+  policy_violations: 5
+  patch_attempts: 3
+  repair_cycles: 2
+  identical_failed_actions: 2
+  run_wall_clock_seconds: 2400
+  patch_bytes: 65536
+  patch_files: 5
+  added_lines: 200
+  deleted_lines: 100
