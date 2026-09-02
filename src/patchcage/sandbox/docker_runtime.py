@@ -141,7 +141,8 @@ class DockerRuntime:
             if work is not None:
                 with contextlib.suppress(APIError):
                     work.remove(force=True)
-            self.cleanup_run(run_id)
+            with contextlib.suppress(Exception):
+                self.cleanup_run(run_id)
             raise
         finally:
             if seed is not None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from patchcage.domain import Finding, FindingSource, ProjectManifest
@@ -113,6 +115,35 @@ async def test_mcp_connect_failure_cleans_up_sandbox(monkeypatch: pytest.MonkeyP
     assert runtime.cleaned == [runtime.sandbox]
     assert session._sandbox is None
     assert session._mcp is None
+
+
+async def test_cleanup_failure_does_not_replace_cancelled_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class BoomCleanup(FakeRuntime):
+        def cleanup(self, sandbox: Sandbox) -> None:
+            self.cleaned.append(sandbox)
+            raise RuntimeError("cleanup failed")
+
+    runtime = BoomCleanup()
+    monkeypatch.setattr(
+        "patchcage.harness.docker_session.WorkspaceMCPClient", BoomMCPExit
+    )
+    session = DockerWorkspaceSession(
+        runtime=runtime,  # type: ignore[arg-type]
+        image="patchcage/python-demo:dev",
+        snapshot=_snapshot(),
+        manifest=_manifest(),
+        finding=_finding(),
+    )
+    await session.__aenter__()
+    await session.__aexit__(asyncio.CancelledError, asyncio.CancelledError(), None)
+    assert runtime.cleaned == [runtime.sandbox]
+    assert session._sandbox is None
+    err = capsys.readouterr().err
+    assert "mcp close failed during cancel" in err
+    assert "sandbox cleanup failed during cancel" in err
 
 
 async def test_mcp_exit_failure_still_cleans_up_sandbox(

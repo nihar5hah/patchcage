@@ -16,6 +16,9 @@ dependencies = [
   "PyYAML",
 ]
 
+[project.scripts]
+patchcage-engine = "patchcage.engine_cli:main"
+
 [project.optional-dependencies]
 demo = [
   "flask",

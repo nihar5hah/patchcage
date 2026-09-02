@@ -99,7 +99,7 @@ class OpenAICompatGateway:
                 f"{self._base_url}/models",
                 headers=self._headers(),
             )
-        except httpx.HTTPError:
+        except (httpx.HTTPError, httpx.InvalidURL):
             return ModelHealth(ok=False, detail=f"endpoint unreachable: {self._base_url}")
         if response.status_code >= 400:
             return ModelHealth(ok=False, detail=f"endpoint returned HTTP {response.status_code}")
@@ -150,7 +150,7 @@ class OpenAICompatGateway:
             raise ModelUnavailable(
                 f"model endpoint returned HTTP {exc.response.status_code}"
             ) from exc
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
             raise ModelUnavailable(f"model endpoint unreachable: {self._base_url}") from exc
         try:
             content = response.json()["choices"][0]["message"]["content"]

@@ -1,17 +1,19 @@
 """Docker-backed WorkspaceSession: the production seam for the runner.
 
-ponytail: container creation and host checks block the event loop. The engine
-CLI runs one run per process, so pushing these onto threads is not worth it
-yet; revisit if the CLI ever runs concurrent runs in-process.
+ponytail: container creation and host checks block the event loop, so
+SIGTERM/SIGINT is only delivered at the next await (a host check can run up
+to its timeout). One run per process; move these onto threads if the CLI
+needs prompt cancel during checks.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from types import TracebackType
+import asyncio
+import sys
 from typing import Any
 
 from patchcage.domain import CheckResult, Finding, ProjectManifest
+from patchcage.harness.runner import SessionFactory, WorkspaceSession
 from patchcage.mcp import WorkspaceMCPClient
 from patchcage.sandbox.check_runner import run_named_check
 from patchcage.sandbox.docker_runtime import DockerRuntime, Sandbox
@@ -59,16 +61,34 @@ class DockerWorkspaceSession:
         self,
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
-        tb: TracebackType | None,
+        tb: object,
     ) -> None:
+        incoming_cancel = exc_type is asyncio.CancelledError
         try:
             if self._mcp is not None:
-                await self._mcp.__aexit__(exc_type, exc, tb)
+                try:
+                    await self._mcp.__aexit__(exc_type, exc, tb)
+                except Exception as close_error:
+                    if not incoming_cancel:
+                        raise
+                    print(
+                        f"mcp close failed during cancel: {close_error}",
+                        file=sys.stderr,
+                    )
         finally:
             self._mcp = None
             if self._sandbox is not None:
-                self._runtime.cleanup(self._sandbox)
-                self._sandbox = None
+                try:
+                    self._runtime.cleanup(self._sandbox)
+                except Exception as cleanup_error:
+                    if not incoming_cancel:
+                        raise
+                    print(
+                        f"sandbox cleanup failed during cancel: {cleanup_error}",
+                        file=sys.stderr,
+                    )
+                finally:
+                    self._sandbox = None
 
     @property
     def baseline_sha(self) -> str:
@@ -98,7 +118,7 @@ def docker_session_factory(
     image: str,
     manifest: ProjectManifest,
     finding: Finding,
-) -> Callable[[SnapshotArtifact], DockerWorkspaceSession]:
+) -> SessionFactory:
     """Build a session factory binding everything except the snapshot.
 
     `finding` must be the same Finding object passed to RunRequest — the
@@ -106,7 +126,7 @@ def docker_session_factory(
     shows request.finding to the model.
     """
 
-    def factory(snapshot: SnapshotArtifact) -> DockerWorkspaceSession:
+    def factory(snapshot: SnapshotArtifact) -> WorkspaceSession:
         return DockerWorkspaceSession(
             runtime=runtime,
             image=image,

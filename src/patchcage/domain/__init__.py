@@ -1,6 +1,6 @@
 """Framework-independent PatchCage domain models."""
 
-from patchcage.domain.manifest import load_manifest
+from patchcage.domain.manifest import load_finding, load_manifest, load_scripted_actions
 from patchcage.domain.models import (
     AGENT_ACTION_ADAPTER,
     AgentAction,
@@ -39,5 +39,7 @@ __all__ = [
     "RunPhase",
     "ScopeSpec",
     "ToolAction",
+    "load_finding",
     "load_manifest",
+    "load_scripted_actions",
 ]

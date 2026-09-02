@@ -242,6 +242,16 @@ async def test_openai_compat_health(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "unreachable" in health.detail
 
 
+async def test_openai_compat_health_invalid_url() -> None:
+    gateway = OpenAICompatGateway("http://127.0.0.1:notaport", "test-model")
+    try:
+        health = await gateway.health()
+        assert not health.ok
+        assert "unreachable" in health.detail
+    finally:
+        await gateway.aclose()
+
+
 async def test_openai_compat_health_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PATCHCAGE_MODEL_API_KEY", raising=False)
     seen: list[httpx.Request] = []

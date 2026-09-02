@@ -7,9 +7,9 @@ sandbox. The host — not the model — owns policy, verification, and export.
 Patches only leave the cage after compile, scanner, security-oracle, and unit
 checks pass on a **clean replay** of the snapshot, and a human approves.
 
-This repository is the Python engine (Phases 1–2). There is no `patchcage`
-CLI yet. You drive the harness from Python (or pytest). A subprocess CLI and
-a TypeScript agent wrapper are planned separately.
+This repository is the Python engine plus `patchcage-engine`, the JSON-lines
+subprocess CLI a TypeScript agent wrapper will drive. You can also call the
+harness from Python (or pytest).
 
 ## What it does
 
@@ -23,10 +23,23 @@ a TypeScript agent wrapper are planned separately.
    always walks confirmation → apply → host checks → clean replay.
 4. **Verify independently.** Host check order is compile → scanner →
    security oracle → unit. Expectations come from the project manifest.
-5. **Export only after approval.** A passing run stops at `awaiting_approval`.
-   Persisting `final.patch` is a separate step.
+5. **Export only after approval.** A passing `run` stops at `awaiting_approval`
+   and never writes `final.patch`. Export is a second invocation:
 
-Steering comments are advisory. Verification cannot be skipped.
+   ```bash
+   patchcage-engine run --repo <path> --manifest <path> --finding <file> \
+     --model-endpoint <url> --model-id <id> [--run-dir <dir>]
+   patchcage-engine export --run <dir> --out <dir>
+   ```
+
+   `--out` is a directory that receives `final.patch` and `evidence.json`.
+   `--finding` is Finding YAML/JSON, not free text. `--scripted` replays a
+   list of actions (tests/demos) and makes the model flags optional.
+   Live model calls send `Authorization: Bearer` from `PATCHCAGE_MODEL_API_KEY`
+   when that env var is set (llama.cpp-style endpoints can omit it).
+   Events are JSON lines on stdout; diagnostics go to stderr.
+
+   `python -m patchcage.engine_cli` is the same entry as `patchcage-engine`.
 
 ## Requirements
 
@@ -60,8 +73,9 @@ the local tag to a digest and fails if the image is missing.
 .venv/bin/python -m mypy
 ```
 
-Unit tests do not need Docker. Tests marked `docker` skip when the daemon is
-down. They build (or reuse) the local runtime image and use
+Unit tests do not need Docker. Use `pytest -m "not docker"` to skip the
+Docker-backed integration tests. Tests marked `docker` also skip when the
+daemon is down. They build (or reuse) the local runtime image and use
 `scripts/create_demo_repo.py` to materialize
 `demo_projects/flask_sql_injection` as a throwaway git repo.
 
@@ -110,6 +124,8 @@ Do not use this against systems you do not own or are not authorized to test.
 
 ## Status
 
-**0.1.0** — engine library. Honest MVP: a run that passes verification
-exits at `awaiting_approval`; writing the evidence bundle / `final.patch`
-is a second host action. No `patchcage-engine` console script yet.
+**0.1.0** — engine library and `patchcage-engine` CLI. Honest MVP: a run that
+passes verification exits at `awaiting_approval`; `export --run <dir> --out
+<dir>` writes the evidence bundle and `final.patch`. A TypeScript agent
+wrapper is planned separately. First-run disclosure, `/sandbox`, and the
+installer are not in this cut.

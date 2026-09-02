@@ -1,0 +1,9 @@
+id: sql-1
+source: semgrep_sarif
+rule_id: patchcage.python.sql-injection.formatted-query
+title: SQL injection via formatted query
+description: User input is interpolated into a SQL execute call.
+severity: ERROR
+file_path: src/demo_app/search.py
+start_line: 20
+verification_recipe: sql_injection_oracle

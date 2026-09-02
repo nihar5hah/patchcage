@@ -556,11 +556,50 @@ async def test_teardown_cancel_does_not_overwrite_concluded_run(tmp_path: Path) 
         finding=_finding(),
     )
 
-    with pytest.raises(asyncio.CancelledError):
-        await runner.run(request)
+    result = await runner.run(request)
 
+    assert result.phase is RunPhase.AWAITING_APPROVAL
     state = json.loads((tmp_path / "run" / "run_state.json").read_text())
     assert state["phase"] == "awaiting_approval"
+    assert work.closed
+
+
+async def test_teardown_error_does_not_overwrite_concluded_run(tmp_path: Path) -> None:
+    class BoomOnExit(FakeSession):
+        async def __aexit__(self, *args: object) -> None:
+            self.closed = True
+            raise RuntimeError("mcp cleanup failed")
+
+    gateway = ScriptedGateway([_patch_action()])
+    work = BoomOnExit(_baseline_script() + _verified_script())
+    replay = FakeSession(_verified_script())
+    sessions = [work, replay]
+    index = {"n": 0}
+
+    def factory(snapshot: SnapshotArtifact) -> FakeSession:
+        session = sessions[index["n"]]
+        index["n"] += 1
+        return session
+
+    runner = HarnessRunner(
+        gateway=gateway,
+        session_factory=factory,
+        run_dir=tmp_path / "run",
+        snapshotter=_snapshot,
+    )
+    request = RunRequest(
+        repo=Path("/tmp/demo"),
+        commit="0" * 40,
+        manifest=_manifest(),
+        finding=_finding(),
+    )
+
+    result = await runner.run(request)
+
+    assert result.phase is RunPhase.AWAITING_APPROVAL
+    state = json.loads((tmp_path / "run" / "run_state.json").read_text())
+    assert state["phase"] == "awaiting_approval"
+    assert work.closed
 
 
 async def test_cancellation_marks_state_and_propagates(tmp_path: Path) -> None:
@@ -578,4 +617,30 @@ async def test_cancellation_marks_state_and_propagates(tmp_path: Path) -> None:
 
     state = json.loads((rig.run_dir / "run_state.json").read_text())
     assert state["phase"] == "cancelled"
+    assert rig.sessions[0].closed
+
+
+async def test_cancel_persist_failure_does_not_replace_cancelled_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class CancellingGateway:
+        async def health(self) -> ModelHealth:
+            return ModelHealth(ok=True)
+
+        async def next_action(self, context: object) -> AgentAction:
+            raise asyncio.CancelledError
+
+    def boom_persist(self: HarnessRunner, result: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(HarnessRunner, "_persist", boom_persist)
+    rig = Rig(CancellingGateway(), [_baseline_script()], tmp_path)
+
+    with pytest.raises(asyncio.CancelledError):
+        await rig.run()
+
+    assert "persist failed during cancel" in capsys.readouterr().err
+    assert not (rig.run_dir / "run_state.json").exists()
     assert rig.sessions[0].closed

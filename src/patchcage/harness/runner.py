@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -178,6 +179,7 @@ class HarnessRunner:
         self._sequence = 0
         self._started = False
         self._concluded = False
+        self._final: RunResult | None = None
 
     async def run(self, request: RunRequest) -> RunResult:
         if self._started:
@@ -401,15 +403,22 @@ class HarnessRunner:
                         )
 
         except asyncio.CancelledError:
-            if not self._concluded and not is_terminal(self._phase):
+            if self._concluded:
+                assert self._final is not None
+                return self._final
+            if not is_terminal(self._phase):
                 self._advance(RunPhase.CANCELLED)
-                self._persist(
-                    self._result(run_id, "cancelled", check_results, None, None)
-                )
+                try:
+                    self._persist(
+                        self._result(run_id, "cancelled", check_results, None, None)
+                    )
+                except Exception as error:
+                    print(f"persist failed during cancel: {error}", file=sys.stderr)
             raise
         except SandboxError as error:
             if self._concluded:
-                raise
+                assert self._final is not None
+                return self._final
             return self._conclude(
                 run_id,
                 RunPhase.SANDBOX_ERROR,
@@ -418,7 +427,8 @@ class HarnessRunner:
             )
         except MCPToolError as error:
             if self._concluded:
-                raise
+                assert self._final is not None
+                return self._final
             return self._conclude(
                 run_id,
                 RunPhase.SANDBOX_ERROR,
@@ -427,13 +437,15 @@ class HarnessRunner:
             )
         except BudgetExceeded as error:
             if self._concluded:
-                raise
+                assert self._final is not None
+                return self._final
             return self._conclude(
                 run_id, RunPhase.BUDGET_EXHAUSTED, str(error), check_results
             )
         except Exception as error:
             if self._concluded:
-                raise
+                assert self._final is not None
+                return self._final
             return self._conclude(
                 run_id,
                 RunPhase.SANDBOX_ERROR,
@@ -559,6 +571,7 @@ class HarnessRunner:
         result = self._result(
             run_id, detail, check_results, candidate_patch, candidate_sha256
         )
+        self._final = result
         self._persist(result)
         return result
 
@@ -583,17 +596,23 @@ class HarnessRunner:
     def _persist(self, result: RunResult) -> None:
         self._run_dir.mkdir(parents=True, exist_ok=True)
         if result.candidate_patch is not None:
-            (self._run_dir / "candidate.patch").write_text(result.candidate_patch)
+            (self._run_dir / "candidate.patch").write_text(
+                result.candidate_patch, encoding="utf-8"
+            )
         state = {
             "run_id": result.run_id,
             "phase": result.phase.value,
             "candidate_sha256": result.candidate_sha256,
             "detail": result.detail,
         }
-        (self._run_dir / "run_state.json").write_text(json.dumps(state, indent=2) + "\n")
+        (self._run_dir / "run_state.json").write_text(
+            json.dumps(state, indent=2) + "\n", encoding="utf-8"
+        )
         evidence = {
             "run_id": result.run_id,
             "phase": result.phase.value,
             "checks": [check.model_dump(mode="json") for check in result.check_results],
         }
-        (self._run_dir / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+        (self._run_dir / "evidence.json").write_text(
+            json.dumps(evidence, indent=2) + "\n", encoding="utf-8"
+        )

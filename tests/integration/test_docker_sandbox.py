@@ -45,7 +45,10 @@ def _docker_ready() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(not _docker_ready(), reason="Docker daemon is not running")
+pytestmark = [
+    pytest.mark.docker,
+    pytest.mark.skipif(not _docker_ready(), reason="Docker daemon is not running"),
+]
 
 
 def demo_finding() -> Finding:
