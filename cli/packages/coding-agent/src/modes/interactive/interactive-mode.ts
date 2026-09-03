@@ -45,7 +45,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import { spawn } from "child_process";
+import { type ChildProcess, spawn } from "child_process";
 import { runModelPresetOnboarding } from "../../cli/patchcage-onboarding.ts";
 import { showStartupSelector } from "../../cli/startup-ui.ts";
 import {
@@ -96,6 +96,7 @@ import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import { applyPresetToSession } from "../../core/patchcage-agent-mode.ts";
 import {
+	assertSandboxTarget,
 	buildExportArgs,
 	buildRunArgs,
 	describeFailure,
@@ -523,6 +524,7 @@ export class InteractiveMode {
 
 	// /sandbox: aborting SIGINTs the engine child (engine maps that to `cancelled`)
 	private sandboxAbort?: AbortController;
+	private sandboxChild?: ChildProcess;
 
 	// Auto-compaction state
 	private autoCompactionEscapeHandler?: () => void;
@@ -3600,6 +3602,20 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	/** Engine events must not fold into the previous status line. */
+	private showSandboxEvent(message: string): void {
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(theme.fg("dim", message), 1, 0));
+		this.lastStatusSpacer = undefined;
+		this.lastStatusText = undefined;
+		this.ui.requestRender();
+	}
+
+	private abortSandboxEngine(): void {
+		this.sandboxAbort?.abort();
+		this.sandboxChild?.kill("SIGINT");
+	}
+
 	private addCustomEntryToChat(entry: Extract<SessionEntry, { type: "custom" }>): void {
 		const renderer = this.session.extensionRunner.getEntryRenderer(entry.customType);
 		if (!renderer) {
@@ -3972,6 +3988,7 @@ export class InteractiveMode {
 	private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
+		this.abortSandboxEngine();
 		// Keep signal handlers registered until terminal cleanup has completed.
 		// `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
 		// dispatch and re-sends the signal if only its own listeners remain.
@@ -4012,6 +4029,7 @@ export class InteractiveMode {
 
 	private emergencyTerminalExit(): never {
 		this.isShuttingDown = true;
+		this.abortSandboxEngine();
 		this.unregisterSignalHandlers();
 		killTrackedDetachedChildren();
 		// The terminal is gone. Do not run normal shutdown because TUI and
@@ -4035,6 +4053,9 @@ export class InteractiveMode {
 			process.exit(1);
 		}
 		this.isShuttingDown = true;
+		try {
+			this.abortSandboxEngine();
+		} catch {}
 		try {
 			this.unregisterSignalHandlers();
 		} catch {}
@@ -4072,6 +4093,7 @@ export class InteractiveMode {
 				// surfaces as an EIO on the restore writes, which the stdout/stderr
 				// error handler converts into emergencyTerminalExit (see #4144, #5080).
 				killTrackedDetachedChildren();
+				this.abortSandboxEngine();
 				void this.shutdown({ fromSignal: true });
 			};
 			process.prependListener(signal, handler);
@@ -4917,6 +4939,10 @@ export class InteractiveMode {
 	 * The chat agent itself stays unsandboxed.
 	 */
 	private async handleSandboxCommand(findingArg: string | undefined): Promise<void> {
+		if (this.sandboxAbort) {
+			this.showError("a sandbox run is already in progress");
+			return;
+		}
 		const repoRoot = process.cwd();
 		if (!isRepoRoot(repoRoot)) {
 			this.showError(`/sandbox must run from a git repository root. ${SANDBOX_USAGE}`);
@@ -4927,23 +4953,42 @@ export class InteractiveMode {
 			this.showError(inputs.error);
 			return;
 		}
+		const target = assertSandboxTarget(repoRoot, inputs.finding, inputs.manifest);
+		if (!target.ok) {
+			this.showError(target.error);
+			return;
+		}
 		const model = this.session.model;
 		if (!model) {
 			this.showError("No model selected. Use /model or /setup-model first.");
 			return;
 		}
-		if (model.api !== "openai-completions" && model.api !== "openai-responses") {
-			this.showError(`/sandbox needs an OpenAI-compatible model endpoint; ${model.provider} uses ${model.api}.`);
+		if (model.api !== "openai-completions") {
+			this.showError(
+				`/sandbox needs Chat Completions (api: openai-completions). ${model.provider} uses ${model.api}. Use a preset or models.json with api: "openai-completions".`,
+			);
 			return;
 		}
 		let apiKey: string | undefined;
+		let extraHeaders: Record<string, string> | undefined;
 		let modelEndpoint = model.baseUrl;
 		try {
 			const auth = await this.session.modelRuntime.getAuth(model);
 			apiKey = auth?.auth.apiKey;
+			if (auth?.auth.headers) {
+				const headers: Record<string, string> = {};
+				for (const [key, value] of Object.entries(auth.auth.headers)) {
+					if (typeof value === "string" && value.length > 0) headers[key] = value;
+				}
+				if (Object.keys(headers).length > 0) extraHeaders = headers;
+			}
 			if (auth?.auth.baseUrl) modelEndpoint = auth.auth.baseUrl;
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
+			return;
+		}
+		if (this.sandboxAbort) {
+			this.showError("a sandbox run is already in progress");
 			return;
 		}
 
@@ -4952,63 +4997,90 @@ export class InteractiveMode {
 		const bin = resolveEngineBinary();
 		const abort = new AbortController();
 		this.sandboxAbort = abort;
-		this.showStatus(`sandbox: starting ${bin} (run ${runId}); Esc cancels`);
-		const outcome = await runEngine({
-			bin,
-			args: buildRunArgs({
-				repo: repoRoot,
-				manifest: inputs.manifest,
-				finding: inputs.finding,
-				runDir,
-				modelEndpoint,
-				modelId: model.id,
-			}),
-			cwd: repoRoot,
-			env: engineEnv(process.env, apiKey),
-			signal: abort.signal,
-			onEvent: (event) => {
-				const line = narrateEvent(event);
-				if (line) this.showStatus(line);
-			},
-		});
-		this.sandboxAbort = undefined;
-
-		if (outcome.result?.status !== "awaiting_approval") {
-			this.showError(describeFailure(outcome));
-			return;
-		}
-
-		this.ui.stop();
-		let approve: boolean | undefined;
 		try {
-			approve = await showStartupSelector(
-				this.settingsManager,
-				`Sandbox run ${runId} passed verification (run dir: ${runDir}).\nExport final.patch + evidence.json?`,
-				[
-					{ label: "Export", value: true },
-					{ label: "Discard (keep run dir, write nothing)", value: false },
-				],
-			);
+			this.showStatus(`sandbox: starting ${bin} (run ${runId}); Esc cancels`);
+			const outcome = await runEngine({
+				bin,
+				args: buildRunArgs({
+					repo: repoRoot,
+					manifest: inputs.manifest,
+					finding: inputs.finding,
+					runDir,
+					modelEndpoint,
+					modelId: model.id,
+				}),
+				cwd: repoRoot,
+				env: engineEnv(process.env, apiKey, extraHeaders),
+				signal: abort.signal,
+				onSpawn: (child) => {
+					this.sandboxChild = child;
+				},
+				onEvent: (event) => {
+					const line = narrateEvent(event);
+					if (line) this.showSandboxEvent(line);
+				},
+			});
+			this.sandboxChild = undefined;
+
+			if (abort.signal.aborted || outcome.result?.status === "cancelled") {
+				this.showSandboxEvent("sandbox: cancelled");
+				return;
+			}
+			if (outcome.result?.status !== "awaiting_approval") {
+				this.showError(describeFailure(outcome));
+				return;
+			}
+
+			this.ui.stop();
+			let approve: boolean | undefined;
+			try {
+				approve = await showStartupSelector(
+					this.settingsManager,
+					`Sandbox run ${runId} passed verification (run dir: ${runDir}).\nExport final.patch + evidence.json?`,
+					[
+						{ label: "Export", value: true },
+						{ label: "Discard (keep run dir, write nothing)", value: false },
+					],
+				);
+			} finally {
+				this.ui.start();
+				this.ui.requestRender(true);
+			}
+			if (abort.signal.aborted) {
+				this.showSandboxEvent("sandbox: cancelled");
+				return;
+			}
+			if (approve !== true) {
+				this.showStatus(`sandbox: not exported. Run dir kept at ${runDir}`);
+				return;
+			}
+
+			const outDir = path.join(repoRoot, EXPORTS_DIR, runId);
+			const exported = await runEngine({
+				bin,
+				args: buildExportArgs(runDir, outDir),
+				cwd: repoRoot,
+				env: engineEnv(process.env, undefined),
+				signal: abort.signal,
+				onSpawn: (child) => {
+					this.sandboxChild = child;
+				},
+				onEvent: () => {},
+			});
+			this.sandboxChild = undefined;
+
+			if (abort.signal.aborted || exported.result?.status === "cancelled") {
+				this.showSandboxEvent("sandbox: cancelled");
+				return;
+			}
+			if (exported.result?.status === "exported") {
+				this.showStatus(`sandbox: exported final.patch + evidence.json to ${outDir}`);
+			} else {
+				this.showError(describeFailure(exported));
+			}
 		} finally {
-			this.ui.start();
-			this.ui.requestRender(true);
-		}
-		if (approve !== true) {
-			this.showStatus(`sandbox: not exported. Run dir kept at ${runDir}`);
-			return;
-		}
-		const outDir = path.join(repoRoot, EXPORTS_DIR, runId);
-		const exported = await runEngine({
-			bin,
-			args: buildExportArgs(runDir, outDir),
-			cwd: repoRoot,
-			env: engineEnv(process.env, undefined),
-			onEvent: () => {},
-		});
-		if (exported.result?.status === "exported") {
-			this.showStatus(`sandbox: exported final.patch + evidence.json to ${outDir}`);
-		} else {
-			this.showError(describeFailure(exported));
+			this.sandboxAbort = undefined;
+			this.sandboxChild = undefined;
 		}
 	}
 

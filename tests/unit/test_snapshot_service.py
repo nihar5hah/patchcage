@@ -75,6 +75,8 @@ def test_snapshot_uses_commit_and_excludes_untracked_env(tmp_path: Path) -> None
 
     assert snapshot.commit_sha == commit_sha
     assert ".env" not in snapshot.entries
+    assert (repository / "manifests" / "flask_sql_injection.finding.yml").is_file()
+    assert (repository / "manifests" / "flask_sql_injection.yml").is_file()
     assert (extracted / "src" / "demo_app" / "search.py").is_file()
     assert not (extracted / ".git").exists()
     assert not (extracted / ".env").exists()

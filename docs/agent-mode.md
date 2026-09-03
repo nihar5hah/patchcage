@@ -43,15 +43,23 @@ Spawns `patchcage-engine run` as a subprocess and narrates its JSON-lines
 events (`phase`, `check_result`, `result`) as status lines. The model cannot
 invoke it; only the user can.
 
-- Run from the git root. Finding is YAML/JSON, not chat text. The manifest is
-  the sibling without `.finding` (`X.finding.yml` → `X.yml`). With no argument,
-  exactly one `manifests/*.finding.yml` must exist; otherwise usage error.
+- cwd is the **target** git root (the repo to snapshot), not the PatchCage
+  checkout unless that *is* the target. Finding is YAML/JSON, not chat text.
+  The manifest is the sibling without `.finding` (`X.finding.yml` → `X.yml`).
+  With no argument, exactly one `manifests/*.finding.yml` must exist.
+- Finding and manifest files must exist. `file_path` must resolve inside the
+  current git root. Flask demo: `python scripts/create_demo_repo.py <dir> &&
+  cd <dir>`, then `/sandbox` (the helper copies finding + manifest into
+  `manifests/`). Or pass an absolute finding path from that git root.
 - Engine binary: `PATCHCAGE_ENGINE` if set, else `patchcage-engine` on PATH.
   Missing binary is an error, never a `python -m` fallback.
-- Model: the current session's OpenAI-compatible `baseUrl` / `id`. The API key
-  reaches the child only as `PATCHCAGE_MODEL_API_KEY` and is never echoed.
-- Run dir: `<repo>/.patchcage/runs/<id>`. Esc sends SIGINT; the engine reports
-  `cancelled`.
+- Model must be Chat Completions (`api: openai-completions`). `openai-responses`
+  is rejected. The key reaches the child only as `PATCHCAGE_MODEL_API_KEY`; extra
+  auth headers as `PATCHCAGE_MODEL_HTTP_HEADERS` (JSON object). Parent secrets
+  are stripped. Neither is logged.
+- Concurrent `/sandbox` is refused. Run dir: `<repo>/.patchcage/runs/<id>`.
+  Esc, quit, and signals SIGINT the engine; cancelled is not an error. Esc
+  also cancels export.
 - `awaiting_approval` → **Export** / **Discard**. Export runs
   `patchcage-engine export --run <dir> --out <repo>/.patchcage/exports/<id>`.
   Discard writes nothing and keeps the run dir. `final.patch` is never written

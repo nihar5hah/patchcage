@@ -27,6 +27,13 @@ def create_demo_repo(destination: Path, template: Path = DEFAULT_TEMPLATE) -> st
         raise FileExistsError(f"destination already exists: {destination}")
 
     shutil.copytree(template, destination)
+    finding = PROJECT_ROOT / "manifests" / f"{template.name}.finding.yml"
+    manifest = PROJECT_ROOT / "manifests" / f"{template.name}.yml"
+    if finding.is_file() and manifest.is_file():
+        dest = destination / "manifests"
+        dest.mkdir(exist_ok=True)
+        shutil.copy2(finding, dest / finding.name)
+        shutil.copy2(manifest, dest / manifest.name)
     run_git(destination, "init", "-q", "-b", "main")
     run_git(destination, "add", ".")
     run_git(

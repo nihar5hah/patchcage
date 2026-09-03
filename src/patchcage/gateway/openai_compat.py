@@ -3,7 +3,8 @@
 One implementation covers Ollama, llama.cpp, vLLM, and hosted
 OpenAI-compatible endpoints. An API key is optional: local servers (Ollama,
 llama.cpp) omit it; hosted endpoints read it from PATCHCAGE_MODEL_API_KEY.
-The key is never stored, logged, or included in error messages.
+Optional extra headers come from PATCHCAGE_MODEL_HTTP_HEADERS (JSON object).
+The key and extra headers are never stored, logged, or included in errors.
 """
 
 from __future__ import annotations
@@ -19,10 +20,30 @@ from patchcage.gateway.base import InvalidModelOutput, ModelHealth, ModelUnavail
 from patchcage.harness.context import AgentContext
 
 DEFAULT_API_KEY_ENV = "PATCHCAGE_MODEL_API_KEY"
+DEFAULT_HTTP_HEADERS_ENV = "PATCHCAGE_MODEL_HTTP_HEADERS"
 MAX_ACTION_TOKENS = 1_200
 MAX_RESPONSE_CHARS = 1_000_000
 _ERROR_BODY_CAP = 4_096
 _RESPONSE_FORMAT_HINTS = ("response_format", "json_object")
+
+
+def _parse_extra_headers() -> dict[str, str]:
+    """PATCHCAGE_MODEL_HTTP_HEADERS as a string→string JSON object. Fail closed."""
+    raw = os.environ.get(DEFAULT_HTTP_HEADERS_ENV)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("PATCHCAGE_MODEL_HTTP_HEADERS must be a JSON object") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("PATCHCAGE_MODEL_HTTP_HEADERS must be a JSON object")
+    headers: dict[str, str] = {}
+    for key, value in parsed.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError("PATCHCAGE_MODEL_HTTP_HEADERS values must be strings")
+        headers[key] = value
+    return headers
 
 
 def _rejects_response_format(response: httpx.Response) -> bool:
@@ -102,10 +123,12 @@ class OpenAICompatGateway:
             await self._client.aclose()
 
     def _headers(self) -> dict[str, str]:
-        api_key = os.environ.get(self._api_key_env)
-        if not api_key:
-            return {}
-        return {"Authorization": f"Bearer {api_key}"}
+        headers = dict(_parse_extra_headers())
+        if not any(key.lower() == "authorization" for key in headers):
+            api_key = os.environ.get(self._api_key_env)
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+        return headers
 
     async def health(self) -> ModelHealth:
         try:
@@ -113,6 +136,8 @@ class OpenAICompatGateway:
                 f"{self._base_url}/models",
                 headers=self._headers(),
             )
+        except ValueError:
+            return ModelHealth(ok=False, detail="invalid extra headers")
         except (httpx.HTTPError, httpx.InvalidURL):
             return ModelHealth(ok=False, detail=f"endpoint unreachable: {self._base_url}")
         if response.status_code >= 400:
@@ -156,6 +181,10 @@ class OpenAICompatGateway:
                 headers=self._headers(),
             )
             response.raise_for_status()
+        except ValueError as exc:
+            raise ModelUnavailable(
+                "PATCHCAGE_MODEL_HTTP_HEADERS must be a JSON object"
+            ) from exc
         except httpx.TimeoutException as exc:
             raise ModelUnavailable(f"model endpoint timed out: {self._base_url}") from exc
         except httpx.HTTPStatusError as exc:

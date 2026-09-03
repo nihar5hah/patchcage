@@ -119,6 +119,43 @@ async def test_openai_compat_parses_valid_action(monkeypatch: pytest.MonkeyPatch
     assert body["messages"][0]["role"] == "system"
 
 
+def test_openai_compat_headers_merge_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATCHCAGE_MODEL_API_KEY", KEY)
+    monkeypatch.setenv(
+        "PATCHCAGE_MODEL_HTTP_HEADERS",
+        json.dumps({"api-key": "azure-key"}),
+    )
+    headers = _gateway(lambda r: _completion(_tool_payload()))._headers()
+    assert headers["Authorization"] == f"Bearer {KEY}"
+    assert headers["api-key"] == "azure-key"
+
+
+def test_openai_compat_extra_authorization_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATCHCAGE_MODEL_API_KEY", KEY)
+    monkeypatch.setenv(
+        "PATCHCAGE_MODEL_HTTP_HEADERS",
+        json.dumps({"Authorization": "Bearer extra"}),
+    )
+    headers = _gateway(lambda r: _completion(_tool_payload()))._headers()
+    assert headers["Authorization"] == "Bearer extra"
+    assert sum(1 for key in headers if key.lower() == "authorization") == 1
+
+
+async def test_openai_compat_invalid_extra_headers_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = "{not json"
+    monkeypatch.setenv("PATCHCAGE_MODEL_HTTP_HEADERS", raw)
+    health = await _gateway(lambda r: _completion(_tool_payload())).health()
+    assert health.ok is False
+    assert health.detail == "invalid extra headers"
+    assert raw not in health.detail
+    with pytest.raises(ModelUnavailable) as excinfo:
+        await _gateway(lambda r: _completion(_tool_payload())).next_action(_context())
+    assert raw not in str(excinfo.value)
+    assert "PATCHCAGE_MODEL_HTTP_HEADERS" in str(excinfo.value)
+
+
 @pytest.mark.parametrize(
     "error_body",
     [

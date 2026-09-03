@@ -3,15 +3,19 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
+	assertSandboxTarget,
 	buildExportArgs,
 	buildRunArgs,
 	DOCKER_DOWN_HINT,
 	describeFailure,
 	ENGINE_MISSING,
 	engineEnv,
+	findingFilePath,
 	MODEL_API_KEY_ENV,
+	MODEL_HTTP_HEADERS_ENV,
 	narrateEvent,
 	parseEngineLine,
+	pathUnderRoot,
 	resolveEngineBinary,
 	resolveSandboxInputs,
 	runEngine,
@@ -60,6 +64,73 @@ describe("engineEnv", () => {
 	it("passes the key only as PATCHCAGE_MODEL_API_KEY and strips a stale one", () => {
 		expect(engineEnv({ HOME: "/h" }, "sk-x")[MODEL_API_KEY_ENV]).toBe("sk-x");
 		expect(engineEnv({ HOME: "/h", [MODEL_API_KEY_ENV]: "old" }, undefined)[MODEL_API_KEY_ENV]).toBeUndefined();
+	});
+	it("strips parent credentials and sets the child key plus extra headers", () => {
+		const env = engineEnv(
+			{
+				HOME: "/h",
+				PATH: "/bin",
+				OPENAI_API_KEY: "leak-openai",
+				GH_TOKEN: "leak-gh",
+				GITHUB_TOKEN: "leak-github",
+				[MODEL_API_KEY_ENV]: "old-key",
+				[MODEL_HTTP_HEADERS_ENV]: '{"Authorization":"Bearer old"}',
+			},
+			"sk-child",
+			{ "api-key": "azure" },
+		);
+		expect(env.HOME).toBe("/h");
+		expect(env.PATH).toBe("/bin");
+		expect(env.OPENAI_API_KEY).toBeUndefined();
+		expect(env.GH_TOKEN).toBeUndefined();
+		expect(env.GITHUB_TOKEN).toBeUndefined();
+		expect(env[MODEL_API_KEY_ENV]).toBe("sk-child");
+		expect(JSON.parse(env[MODEL_HTTP_HEADERS_ENV]!)).toEqual({ "api-key": "azure" });
+	});
+});
+
+describe("findingFilePath / pathUnderRoot / assertSandboxTarget", () => {
+	it("reads file_path from JSON or a YAML line", () => {
+		expect(findingFilePath('{"file_path": "src/app.py"}')).toBe("src/app.py");
+		expect(findingFilePath("file_path: src/demo_app/search.py\n")).toBe("src/demo_app/search.py");
+		expect(findingFilePath('file_path: "src/app.py"  # comment')).toBe("src/app.py");
+		expect(findingFilePath("file_path: |\n  folded")).toBeUndefined();
+		expect(findingFilePath("{}")).toBeUndefined();
+	});
+	it("rejects absolute, empty, and escaping paths", () => {
+		expect(pathUnderRoot("/repo", "src/app.py")).toBe(join("/repo", "src/app.py"));
+		expect(pathUnderRoot("/repo", "/etc/passwd")).toBeUndefined();
+		expect(pathUnderRoot("/repo", "../etc/passwd")).toBeUndefined();
+		expect(pathUnderRoot("/repo", "")).toBeUndefined();
+	});
+	it("fails closed when the finding, path, or target file is missing", () => {
+		const files = new Set(["/repo/manifests/a.finding.yml", "/repo/manifests/a.yml", "/repo/src/app.py"]);
+		const io = {
+			exists: (p: string) => files.has(p),
+			readFile: () => "file_path: src/app.py\n",
+		};
+		expect(assertSandboxTarget("/repo", "/repo/manifests/a.finding.yml", "/repo/manifests/a.yml", io)).toEqual({
+			ok: true,
+		});
+		expect(assertSandboxTarget("/repo", "/missing.yml", "/repo/manifests/a.yml", io).ok).toBe(false);
+		expect(
+			assertSandboxTarget("/repo", "/repo/manifests/a.finding.yml", "/repo/manifests/a.yml", {
+				...io,
+				readFile: () => "title: no path\n",
+			}).error,
+		).toMatch(/no file_path/);
+		expect(
+			assertSandboxTarget("/repo", "/repo/manifests/a.finding.yml", "/repo/manifests/a.yml", {
+				...io,
+				readFile: () => "file_path: ../etc/passwd\n",
+			}).error,
+		).toMatch(/outside/);
+		expect(
+			assertSandboxTarget("/repo", "/repo/manifests/a.finding.yml", "/repo/manifests/a.yml", {
+				...io,
+				readFile: () => "file_path: src/missing.py\n",
+			}).error,
+		).toMatch(/create_demo_repo/);
 	});
 });
 
@@ -160,6 +231,26 @@ describe("runEngine", () => {
 		child.emit("close", 130, null);
 		await promise;
 		expect(child.killed).toEqual(["SIGINT"]);
+	});
+	it("SIGINTs immediately when aborted before spawn and calls onSpawn", async () => {
+		const child = fakeChild();
+		const abort = new AbortController();
+		abort.abort();
+		const spawned: unknown[] = [];
+		const promise = runEngine({
+			bin: "x",
+			args: [],
+			cwd: "/",
+			env: {},
+			onEvent: () => {},
+			signal: abort.signal,
+			onSpawn: (c) => spawned.push(c),
+			spawnImpl: (() => child) as never,
+		});
+		child.emit("close", 130, null);
+		await promise;
+		expect(child.killed).toEqual(["SIGINT"]);
+		expect(spawned).toHaveLength(1);
 	});
 	it("reports a missing engine binary without throwing", async () => {
 		const child = fakeChild();

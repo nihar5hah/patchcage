@@ -173,7 +173,8 @@ def _parser() -> argparse.ArgumentParser:
         "--model-endpoint",
         help=(
             "OpenAI-compatible base URL (required unless --scripted). "
-            "Authorization uses PATCHCAGE_MODEL_API_KEY when that env var is set"
+            "Authorization uses PATCHCAGE_MODEL_API_KEY when that env var is set; "
+            "extra headers from PATCHCAGE_MODEL_HTTP_HEADERS (JSON object)"
         ),
     )
     run.add_argument(

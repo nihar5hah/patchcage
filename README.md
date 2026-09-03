@@ -77,12 +77,16 @@ Unit tests do not need Docker. Use `pytest -m "not docker"` to skip the
 Docker-backed integration tests. Tests marked `docker` also skip when the
 daemon is down. They build (or reuse) the local runtime image and use
 `scripts/create_demo_repo.py` to materialize
-`demo_projects/flask_sql_injection` as a throwaway git repo.
+`demo_projects/flask_sql_injection` as a throwaway git repo. The helper also
+copies the packaged finding + manifest into that repo's `manifests/`.
 
 ## Demo finding
 
 The packaged demo is a Flask search endpoint that interpolates user input
-into SQL (`manifests/flask_sql_injection.yml`).
+into SQL (`manifests/flask_sql_injection.yml`). `scripts/create_demo_repo.py
+<dir>` copies that finding + manifest into `<dir>/manifests/` so `/sandbox`
+auto-picks them after `cd <dir>`. Run `/sandbox` from that materialized git
+root, not this checkout.
 
 | Piece | Path |
 | --- | --- |
@@ -149,8 +153,8 @@ is a vendored pi fork under `cli/`. After `cd cli && npm install
 `node packages/coding-agent/dist/bundle/cli.js` (npm bin name `patchcage`).
 The standalone `dist/patchcage` binary is only from `build:binary`, not the
 default build. Agent mode is unsandboxed; first-run disclosure, model presets,
-the defensive prompt library, and `/sandbox` (spawns `patchcage-engine`,
-export gated on approval) are in the CLI
+the defensive prompt library, and `/sandbox` (from the **target** git root,
+spawns `patchcage-engine`, export gated on approval) are in the CLI
 ([docs/agent-mode.md](docs/agent-mode.md)). Next:
 [docs/roadmap.md](docs/roadmap.md) (installer).
 
