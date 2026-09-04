@@ -3,6 +3,7 @@
 PatchCage's interactive coding agent is **unsandboxed**. It uses your user
 permissions for read, write, and bash. `/sandbox` (below) is the only path
 that runs inside the Docker cage; the chat agent never becomes sandboxed.
+Install without Docker via `scripts/install.sh` (Phase 7; see root README).
 
 ## Disclosure
 

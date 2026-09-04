@@ -43,11 +43,32 @@ harness from Python (or pytest).
 
 ## Requirements
 
-- Python 3.12+
-- Docker daemon (integration tests and live sandbox runs)
-- Git (snapshots and the Flask demo fixture)
+- **One-liner / `scripts/install.sh`:** `curl`, `git`. `uv` is installed if
+  missing and fetches Python 3.12. Node 22.19+ is optional (agent TUI).
+  Docker is **not** required to install or run agent mode.
+- **Dev / tests / live `/sandbox`:** Python 3.12+, Docker daemon, Git.
 
 ## Install
+
+One-liner (engine always; agent when Node ≥22.19 is on PATH — **no Docker**):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nihar5hah/patchcage/main/scripts/install.sh | bash
+```
+
+From a checkout of this tree (installs that revision):
+
+```bash
+bash scripts/install.sh
+```
+
+Puts `patchcage-engine` in `~/.local/bin` via `uv tool install`. If Node is
+new enough, builds `cli/` and symlinks `patchcage` there too (`patchcage`
+points at that source tree — keep it). Overrides: `PATCHCAGE_REF`,
+`PATCHCAGE_SRC`, `PATCHCAGE_BIN`, `PATCHCAGE_SKIP_AGENT=1`.
+Self-check (stubbed, offline): `bash scripts/test_install.sh`.
+
+Dev editable install (engine + tests):
 
 ```bash
 python3.12 -m venv .venv
@@ -55,7 +76,8 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Build the demo runtime image (semgrep, oracle, workspace MCP, Flask):
+Build the demo runtime image (semgrep, oracle, workspace MCP, Flask) — only
+needed for live `/sandbox` / Docker tests:
 
 ```bash
 python scripts/build_runtime_image.py
@@ -107,9 +129,9 @@ src/patchcage_workspace/  in-container MCP server
 runtime/python-demo/      Docker image, rules, oracles, check runners
 manifests/                project manifests
 demo_projects/            authorized vulnerable fixtures
-scripts/                  image build + demo git repo helper
+scripts/                  install.sh, image build, demo git repo helper
 cli/                      vendored pi fork (TypeScript agent, bin name patchcage)
-docs/roadmap.md           phase status; remaining work (installer)
+docs/roadmap.md           phase status
 tests/
 ```
 
@@ -145,18 +167,18 @@ Do not use this against systems you do not own or are not authorized to test.
 
 ## Status
 
-**0.1.0** — Phases 1–6. Engine library and `patchcage-engine` CLI: a run that
+**0.1.0** — Phases 1–7. Engine library and `patchcage-engine` CLI: a run that
 passes verification exits at `awaiting_approval`; `export --run <dir> --out
 <dir>` writes the evidence bundle and `final.patch`. The TypeScript agent CLI
-is a vendored pi fork under `cli/`. After `cd cli && npm install
---ignore-scripts && npm run build`, invoke it as
-`node packages/coding-agent/dist/bundle/cli.js` (npm bin name `patchcage`).
-The standalone `dist/patchcage` binary is only from `build:binary`, not the
-default build. Agent mode is unsandboxed; first-run disclosure, model presets,
-the defensive prompt library, and `/sandbox` (from the **target** git root,
-spawns `patchcage-engine`, export gated on approval) are in the CLI
-([docs/agent-mode.md](docs/agent-mode.md)). Next:
-[docs/roadmap.md](docs/roadmap.md) (installer).
+is a vendored pi fork under `cli/`. Install both with `scripts/install.sh`
+(see Install above), or after `cd cli && npm install --ignore-scripts && npm
+run build`, invoke `node packages/coding-agent/dist/bundle/cli.js` (npm bin
+name `patchcage`). The standalone `dist/patchcage` binary is only from
+`build:binary`, not the default build. Agent mode is unsandboxed; first-run
+disclosure, model presets, the defensive prompt library, and `/sandbox` (from
+the **target** git root, spawns `patchcage-engine`, export gated on approval)
+are in the CLI ([docs/agent-mode.md](docs/agent-mode.md)). Roadmap:
+[docs/roadmap.md](docs/roadmap.md).
 
 A localhost OpenAI-compatible URL is not enough to prove weights stay on the
 machine. Ollama tags ending in `:cloud` proxy to ollama.com. To smoke a
