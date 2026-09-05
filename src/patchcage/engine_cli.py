@@ -16,6 +16,7 @@ import sys
 from collections.abc import Sequence
 from contextlib import suppress
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 import yaml
@@ -56,18 +57,16 @@ def _out_mutates_run(run_dir: Path, out_dir: Path) -> bool:
     return out == run or run in out.parents
 
 
-def export_run(run_dir: Path, out_dir: Path) -> str:
+def export_run(run_dir: Path, out_dir: Path, *, expected_sha256: str | None = None) -> str:
     """Copy `candidate.patch` → `final.patch` plus evidence if the run is gated.
 
     Does not mutate `run_dir`. Fails closed on a missing or unreadable
     artifact, or when `candidate.patch` bytes do not match `candidate_sha256`.
-    Evidence is copied as stored; it is not independently hashed.
+    Evidence must match its persisted digest as well.
     Returns the verified SHA-256 hex digest of the patch.
     """
     if _out_mutates_run(run_dir, out_dir):
-        raise ExportError(
-            "export refused: --out must not be the run directory or inside it"
-        )
+        raise ExportError("export refused: --out must not be the run directory or inside it")
     state_path = run_dir / _RUN_STATE
     patch_path = run_dir / _CANDIDATE
     evidence_path = run_dir / _EVIDENCE
@@ -99,10 +98,19 @@ def export_run(run_dir: Path, out_dir: Path) -> str:
     digest = hashlib.sha256(patch_bytes).hexdigest()
     if digest != stored:
         raise ExportError("export refused: candidate.patch hash does not match run state")
+    if expected_sha256 is not None and digest != expected_sha256:
+        raise ExportError("export refused: candidate differs from the reviewed patch")
+    if hashlib.sha256(evidence_bytes).hexdigest() != state.get("evidence_sha256"):
+        raise ExportError("export refused: evidence.json hash does not match run state")
+    if out_dir.exists() or out_dir.is_symlink():
+        raise ExportError("export refused: output directory already exists")
     try:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / _FINAL_PATCH).write_bytes(patch_bytes)
-        (out_dir / _EVIDENCE).write_bytes(evidence_bytes)
+        out_dir.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix=".patchcage-export-", dir=out_dir.parent) as staging:
+            stage = Path(staging)
+            (stage / _FINAL_PATCH).write_bytes(patch_bytes)
+            (stage / _EVIDENCE).write_bytes(evidence_bytes)
+            stage.rename(out_dir)
     except OSError as error:
         raise ExportError(f"export refused: could not write bundle: {error}") from error
     return digest
@@ -194,6 +202,7 @@ def _parser() -> argparse.ArgumentParser:
         help="write final.patch + evidence.json from an awaiting_approval run directory",
     )
     export.add_argument("--run", type=Path, required=True, dest="run_dir", help="run directory")
+    export.add_argument("--expected-sha256", help="digest of the patch the user reviewed")
     export.add_argument(
         "--out",
         type=Path,
@@ -206,7 +215,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def _cmd_export(args: argparse.Namespace, _parser: argparse.ArgumentParser) -> int:
     try:
-        digest = export_run(args.run_dir, args.out)
+        digest = export_run(args.run_dir, args.out, expected_sha256=args.expected_sha256)
     except ExportError as error:
         print(str(error), file=sys.stderr)
         return EXIT_FAIL
@@ -242,6 +251,7 @@ def _cmd_run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             manifest=manifest,
             finding=finding,
             instructions=args.instructions,
+            model_id=args.model_id or "scripted",
         )
     except (OSError, ValueError, ValidationError, yaml.YAMLError) as error:
         print(f"invalid run arguments: {error}", file=sys.stderr)
@@ -296,6 +306,9 @@ async def _run_engine(
         )
         try:
             result = await runner.run(request)
+        except OSError as error:
+            print(f"run artifacts could not be persisted: {error}", file=sys.stderr)
+            return EXIT_FAIL
         except asyncio.CancelledError:
             # Distinct 130/143 only for in-flight cancel. A SIGTERM that
             # arrives after runner.run has already returned is ignored: the

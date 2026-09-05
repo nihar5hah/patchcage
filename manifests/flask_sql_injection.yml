@@ -26,7 +26,14 @@ scope:
 
 checks:
   compile:
-    argv: [python, -m, compileall, -q, src]
+    argv:
+      - python
+      - -I
+      - -c
+      - |
+        from pathlib import Path
+        for path in Path('src').rglob('*.py'):
+            compile(path.read_bytes(), str(path), 'exec')
     timeout_seconds: 30
     baseline_expectation: passed
     patched_expectation: passed
@@ -50,6 +57,7 @@ checks:
   unit:
     argv:
       - python
+      - -I
       - /opt/patchcage/runners/run_unit.py
       - /workspace
       - tests/unit
@@ -60,6 +68,7 @@ checks:
   security:
     argv:
       - python
+      - -I
       - /opt/patchcage/oracles/sql_injection_oracle.py
       - --workspace
       - /workspace

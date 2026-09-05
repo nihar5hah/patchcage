@@ -61,8 +61,9 @@ invoke it; only the user can.
 - Concurrent `/sandbox` is refused. Run dir: `<repo>/.patchcage/runs/<id>`.
   Esc, quit, and signals SIGINT the engine; cancelled is not an error. Esc
   also cancels export.
-- `awaiting_approval` → **Export** / **Discard**. Export runs
-  `patchcage-engine export --run <dir> --out <repo>/.patchcage/exports/<id>`.
+- `awaiting_approval` → hash-checked candidate preview in `less`, then
+  **Discard** (default) / **Export reviewed patch**. Export runs
+  `patchcage-engine export --run <dir> --out <repo>/.patchcage/exports/<id> --expected-sha256 <reviewed-digest>`.
   Discard writes nothing and keeps the run dir. `final.patch` is never written
   without that approval.
 - Docker down: the engine's `docker daemon unavailable` stderr is shown with a

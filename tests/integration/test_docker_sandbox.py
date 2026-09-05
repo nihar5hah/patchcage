@@ -27,10 +27,8 @@ EXPECTED_TOOLS = {
     "read_file",
     "search_code",
     "get_repository_status",
-    "run_finding_check",
     "propose_patch",
     "get_current_diff",
-    "run_named_check",
     "discard_patch",
 }
 
@@ -104,11 +102,7 @@ def sql_harness(runtime_image_id: str, tmp_path: Path):
 
 
 def _semgrep_results(sandbox: Sandbox) -> list[dict[str, object]]:
-    env_flags = [
-        item
-        for key, value in SANDBOX_ENV.items()
-        for item in ("-e", f"{key}={value}")
-    ]
+    env_flags = [item for key, value in SANDBOX_ENV.items() for item in ("-e", f"{key}={value}")]
     completed = subprocess.run(
         [
             "docker",
@@ -292,9 +286,8 @@ async def test_mcp_stdio_tools_and_policy_denials(sql_harness: dict) -> None:
         hits = await client.call("search_code", {"pattern": "execute", "path": "src"})
         assert hits["matches"]
 
-        with pytest.raises(MCPToolError) as security_error:
-            await client.call("run_named_check", {"name": "security"})
-        assert security_error.value.code == "DENY_UNKNOWN_CHECK"
+        assert "run_named_check" not in tools
+        assert "run_finding_check" not in tools
 
         with pytest.raises(MCPToolError) as traversal_error:
             await client.call("read_file", {"path": "../etc/passwd"})
@@ -321,3 +314,43 @@ async def test_mcp_stdio_tools_and_policy_denials(sql_harness: dict) -> None:
         assert clean_diff["dirty"] is False
         status = await client.call("get_repository_status")
         assert status["baseline_sha"] == sandbox.baseline_sha
+
+
+def test_candidate_has_no_write_or_signal_authority_over_verifier(sql_harness: dict) -> None:
+    runtime = sql_harness["runtime"]
+    check = runtime.create_check_container(sql_harness["sandbox"])
+    try:
+        for code in (
+            "open('/workspace/tests/unit/test_search.py','w')",
+            "open('/workspace/.git/config','w')",
+            "open('/workspace/.patchcage/state.json','w')",
+            "open('/opt/patchcage/oracles/sql_injection_oracle.py').read()",
+            "import os,signal; os.kill(1, signal.SIGTERM)",
+        ):
+            result = subprocess.run(
+                ["docker", "exec", "-u", "65534:65534", str(check.id), "python", "-I", "-c", code],
+                capture_output=True,
+                timeout=10,
+            )
+            assert result.returncode != 0, code
+    finally:
+        check.remove(force=True)
+
+
+@pytest.mark.parametrize("code", ["import time; time.sleep(30)", "while True: print('x' * 8192)"])
+def test_check_limits_remove_the_actual_container(sql_harness: dict, code: str) -> None:
+    runtime = sql_harness["runtime"]
+    sandbox = sql_harness["sandbox"]
+    manifest = sql_harness["manifest"]
+    spec = manifest.checks.unit.model_copy(
+        update={"argv": ("python", "-I", "-c", code), "timeout_seconds": 1}
+    )
+    manifest = manifest.model_copy(
+        update={"checks": manifest.checks.model_copy(update={"unit": spec})}
+    )
+    result = run_named_check(sandbox, "unit", manifest, runtime=runtime)
+    assert result.status is CheckStatus.ERROR
+    assert not runtime.client.containers.list(
+        all=True,
+        filters={"label": [f"patchcage.run_id={sandbox.run_id}", "patchcage.role=check"]},
+    )

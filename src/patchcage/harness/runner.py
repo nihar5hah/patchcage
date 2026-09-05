@@ -63,6 +63,9 @@ class WorkspaceSession(Protocol):
     @property
     def baseline_sha(self) -> str: ...
 
+    @property
+    def image_id(self) -> str: ...
+
     async def __aenter__(self) -> WorkspaceSession: ...
 
     async def __aexit__(
@@ -72,7 +75,7 @@ class WorkspaceSession(Protocol):
         tb: object,
     ) -> None: ...
 
-    async def list_tools(self) -> list[str]: ...
+    async def list_tools(self) -> dict[str, dict[str, Any]]: ...
 
     async def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -99,6 +102,7 @@ class RunRequest(StrictModel):
     manifest: ProjectManifest
     finding: Finding
     instructions: str | None = Field(default=None, max_length=4_000)
+    model_id: str = Field(default="scripted", max_length=500)
 
 
 class RunResult(StrictModel):
@@ -132,30 +136,34 @@ def _expectation_met(spec: CommandSpec, result: CheckResult, *, baseline: bool) 
         return result.status is CheckStatus.PASSED
     if expectation is CheckExpectation.VULNERABILITY_REPRODUCED:
         marker = spec.baseline_required_marker
-        return marker is not None and marker in result.summary
+        return (
+            result.status is CheckStatus.FAILED
+            and result.exit_code == 1
+            and marker is not None
+            and marker in result.summary
+        )
     raise AssertionError(f"unhandled expectation: {expectation}")
 
 
 def _summarize_tool_result(tool: str, payload: dict[str, Any]) -> str:
     rendered = json.dumps(payload, separators=(",", ":"))
-    if len(rendered) > LAST_TOOL_RESULT_LIMIT:
-        rendered = rendered[:LAST_TOOL_RESULT_LIMIT] + "…[truncated]"
-    return f"{tool} -> {rendered}"
+    return _cap_text(f"{tool} -> {rendered}", LAST_TOOL_RESULT_LIMIT)
+
+
+def _cap_text(text: str, limit: int) -> str:
+    suffix = "…[truncated]"
+    return text if len(text) <= limit else text[: limit - len(suffix)] + suffix
 
 
 def _cap_outcome(text: str) -> str:
-    if len(text) <= OUTCOME_LIMIT:
-        return text
-    return text[:OUTCOME_LIMIT] + "…[truncated]"
+    return _cap_text(text, OUTCOME_LIMIT)
 
 
 def _summarize_failures(results: list[CheckResult]) -> str:
     failed = [r for r in results if r.status is not CheckStatus.PASSED]
     lines = [f"{r.name}: {r.status.value} — {r.summary}" for r in failed]
     text = "verification failed; fix and re-patch:\n" + "\n".join(lines)
-    if len(text) > LAST_TOOL_RESULT_LIMIT:
-        text = text[:LAST_TOOL_RESULT_LIMIT] + "…[truncated]"
-    return text
+    return _cap_text(text, LAST_TOOL_RESULT_LIMIT)
 
 
 class HarnessRunner:
@@ -180,6 +188,7 @@ class HarnessRunner:
         self._started = False
         self._concluded = False
         self._final: RunResult | None = None
+        self._provenance: dict[str, Any] = {}
 
     async def run(self, request: RunRequest) -> RunResult:
         if self._started:
@@ -187,6 +196,13 @@ class HarnessRunner:
         self._started = True
 
         run_id = uuid4().hex
+        self._provenance = {
+            "model_id": request.model_id,
+            "manifest_sha256": hashlib.sha256(
+                request.manifest.model_dump_json().encode()
+            ).hexdigest(),
+            "finding": request.finding.model_dump(mode="json"),
+        }
         limits = request.manifest.limits
         budgets = BudgetTracker(limits=limits)
         supervisor = LoopSupervisor(max_identical_failures=limits.identical_failed_actions)
@@ -221,8 +237,16 @@ class HarnessRunner:
                     check_results,
                 )
             self._advance(RunPhase.SNAPSHOT_READY)
+            self._provenance.update(
+                {
+                    "commit_sha": snapshot.commit_sha,
+                    "snapshot_sha256": snapshot.snapshot_sha256,
+                    "archive_sha256": snapshot.sanitized_archive_sha256,
+                }
+            )
 
             async with self._session_factory(snapshot) as session:
+                self._provenance["image_id"] = session.image_id
                 baseline_ok, baseline_results = self._run_ladder(
                     session, request.manifest, baseline=True, fail_fast=True
                 )
@@ -244,9 +268,8 @@ class HarnessRunner:
                     )
                 self._advance(RunPhase.BASELINE_VERIFIED)
 
-                tools = [
-                    name for name in await session.list_tools() if name not in MODEL_HIDDEN_TOOLS
-                ]
+                definitions = await session.list_tools()
+                tools = [name for name in definitions if name not in MODEL_HIDDEN_TOOLS]
                 self._advance(RunPhase.INVESTIGATING)
 
                 while True:
@@ -260,6 +283,7 @@ class HarnessRunner:
                         check_results=check_results,
                         candidate_patch_hash=candidate_sha256,
                         available_tools=tools,
+                        tool_schemas={name: definitions[name] for name in tools},
                         recent_actions=turns,
                     )
                     try:
@@ -409,11 +433,12 @@ class HarnessRunner:
             if not is_terminal(self._phase):
                 self._advance(RunPhase.CANCELLED)
                 try:
-                    self._persist(
-                        self._result(run_id, "cancelled", check_results, None, None)
-                    )
+                    self._persist(self._result(run_id, "cancelled", check_results, None, None))
                 except Exception as error:
                     print(f"persist failed during cancel: {error}", file=sys.stderr)
+            raise
+        except OSError:
+            # Disk/write failures must never be confused with successful teardown.
             raise
         except SandboxError as error:
             if self._concluded:
@@ -439,9 +464,7 @@ class HarnessRunner:
             if self._concluded:
                 assert self._final is not None
                 return self._final
-            return self._conclude(
-                run_id, RunPhase.BUDGET_EXHAUSTED, str(error), check_results
-            )
+            return self._conclude(run_id, RunPhase.BUDGET_EXHAUSTED, str(error), check_results)
         except Exception as error:
             if self._concluded:
                 assert self._final is not None
@@ -565,14 +588,12 @@ class HarnessRunner:
         candidate_patch: str | None = None,
         candidate_sha256: str | None = None,
     ) -> RunResult:
-        self._concluded = True
         self._advance(phase)
-        self._emit("run_finished", {"detail": detail})
-        result = self._result(
-            run_id, detail, check_results, candidate_patch, candidate_sha256
-        )
+        result = self._result(run_id, detail, check_results, candidate_patch, candidate_sha256)
         self._final = result
         self._persist(result)
+        self._concluded = True
+        self._emit("run_finished", {"detail": detail})
         return result
 
     def _result(
@@ -596,23 +617,28 @@ class HarnessRunner:
     def _persist(self, result: RunResult) -> None:
         self._run_dir.mkdir(parents=True, exist_ok=True)
         if result.candidate_patch is not None:
-            (self._run_dir / "candidate.patch").write_text(
-                result.candidate_patch, encoding="utf-8"
-            )
+            (self._run_dir / "candidate.patch").write_text(result.candidate_patch, encoding="utf-8")
         state = {
             "run_id": result.run_id,
             "phase": result.phase.value,
             "candidate_sha256": result.candidate_sha256,
             "detail": result.detail,
         }
-        (self._run_dir / "run_state.json").write_text(
-            json.dumps(state, indent=2) + "\n", encoding="utf-8"
-        )
         evidence = {
             "run_id": result.run_id,
             "phase": result.phase.value,
+            "candidate_sha256": result.candidate_sha256,
+            "provenance": self._provenance,
             "checks": [check.model_dump(mode="json") for check in result.check_results],
         }
-        (self._run_dir / "evidence.json").write_text(
-            json.dumps(evidence, indent=2) + "\n", encoding="utf-8"
-        )
+        evidence_text = json.dumps(evidence, indent=2) + "\n"
+        (self._run_dir / "evidence.json").write_text(evidence_text, encoding="utf-8")
+        state["evidence_sha256"] = hashlib.sha256(evidence_text.encode()).hexdigest()
+        # The state is the commit marker: export cannot see success before both
+        # artifacts exist. A failed replace leaves the last valid state intact.
+        pending = self._run_dir / f".run_state.{uuid4().hex}.tmp"
+        try:
+            pending.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+            pending.replace(self._run_dir / "run_state.json")
+        finally:
+            pending.unlink(missing_ok=True)

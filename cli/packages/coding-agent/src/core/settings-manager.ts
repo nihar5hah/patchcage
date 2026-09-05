@@ -1038,7 +1038,7 @@ export class SettingsManager {
 	}
 
 	getUnsandboxedDisclosureAcknowledged(): boolean {
-		return this.settings.unsandboxedDisclosureAcknowledged === true;
+		return this.globalSettings.unsandboxedDisclosureAcknowledged === true;
 	}
 
 	setUnsandboxedDisclosureAcknowledged(acknowledged: boolean): void {

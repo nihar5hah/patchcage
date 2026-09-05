@@ -8,7 +8,8 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 export const ENGINE_ENV = "PATCHCAGE_ENGINE";
@@ -16,6 +17,25 @@ export const ENGINE_BIN = "patchcage-engine";
 export const MODEL_API_KEY_ENV = "PATCHCAGE_MODEL_API_KEY";
 export const MODEL_HTTP_HEADERS_ENV = "PATCHCAGE_MODEL_HTTP_HEADERS";
 export const EXPORTS_DIR = join(".patchcage", "exports");
+
+/** Read exactly the candidate the engine verified, with a bounded allocation. */
+export function readCandidateForApproval(runDir: string, digest: string | null | undefined): string {
+	if (!digest) throw new Error("Engine result has no candidate digest");
+	const fd = openSync(join(runDir, "candidate.patch"), "r");
+	try {
+		const stat = fstatSync(fd);
+		if (!stat.isFile() || stat.size > 1_000_000) throw new Error("Candidate is not a reviewable patch file");
+		const buffer = Buffer.alloc(stat.size + 1);
+		const length = readSync(fd, buffer, 0, buffer.length, null);
+		const bytes = buffer.subarray(0, length);
+		if (createHash("sha256").update(bytes).digest("hex") !== digest) {
+			throw new Error("Candidate changed after verification; refusing approval");
+		}
+		return bytes.toString("utf8");
+	} finally {
+		closeSync(fd);
+	}
+}
 
 export const SANDBOX_USAGE =
 	"Usage: /sandbox [finding.yml]. The manifest is the sibling file without `.finding` (X.finding.yml → X.yml). Without an argument, exactly one manifests/*.finding.yml must exist under the repo root.";
@@ -272,8 +292,8 @@ export function buildRunArgs(input: {
 	];
 }
 
-export function buildExportArgs(runDir: string, outDir: string): string[] {
-	return ["export", "--run", runDir, "--out", outDir];
+export function buildExportArgs(runDir: string, outDir: string, digest?: string): string[] {
+	return ["export", "--run", runDir, "--out", outDir, ...(digest ? ["--expected-sha256", digest] : [])];
 }
 
 /** True for parent env keys that must not reach the engine child. */

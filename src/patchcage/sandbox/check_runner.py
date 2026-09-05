@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from patchcage.domain import CheckResult, CommandSpec, ProjectManifest
-from patchcage.sandbox.docker_runtime import Sandbox
+from patchcage.sandbox.docker_runtime import DockerRuntime, Sandbox
 from patchcage.sandbox.process import run_local_command
 from patchcage.sandbox_env import SANDBOX_ENV
 
@@ -27,6 +27,7 @@ def run_named_check(
     manifest: ProjectManifest,
     *,
     allow_security: bool = False,
+    runtime: DockerRuntime | None = None,
 ) -> CheckResult:
     if name == "security" and not allow_security:
         raise PermissionError("DENY_UNKNOWN_CHECK")
@@ -35,20 +36,30 @@ def run_named_check(
     spec = _spec_for(manifest, name)
     environment = dict(SANDBOX_ENV)
     environment.update(spec.env)
+    runtime = runtime or DockerRuntime()
+    check = runtime.create_check_container(sandbox)
     argv = [
         "docker",
         "exec",
         "-u",
-        "1000:1000",
+        "0:0",
         "-w",
         sandbox.workdir,
         *[item for key, value in environment.items() for item in ("-e", f"{key}={value}")],
-        sandbox.container_id,
+        str(check.id),
+        "python",
+        "-I",
+        "/opt/patchcage/runners/run_check.py",
+        name,
         *spec.argv,
     ]
-    return run_local_command(
-        argv,
-        name=name,
-        timeout_seconds=spec.timeout_seconds,
-        env=None,
-    )
+    try:
+        return run_local_command(
+            argv,
+            name=name,
+            timeout_seconds=spec.timeout_seconds,
+            env=None,
+        )
+    finally:
+        # Killing a docker exec client alone does not stop its container process.
+        check.remove(force=True)

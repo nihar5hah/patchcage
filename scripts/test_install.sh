@@ -31,6 +31,7 @@ run_case() {
   local name="$1" with_node="$2" onpath="${3:-}"
   local tmp stubs bin home src path_extra
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/pc-install-XXXXXX")"
+  tmp="$(cd "${tmp}" && pwd)"
   stubs="${tmp}/stubs"
   bin="${tmp}/bin"
   home="${tmp}/home"
@@ -149,6 +150,23 @@ run_case "engine-only" 0
 run_case "engine+agent" 1
 run_case "old-node" old
 run_case "bin-on-path" 0 onpath
+
+# Piped install must preserve an existing non-Git source directory.
+preserve_tmp="$(mktemp -d "${TMPDIR:-/tmp}/pc-install-preserve-XXXXXX")"
+mkdir -p "${preserve_tmp}/cache/src"
+printf 'keep me\n' >"${preserve_tmp}/cache/src/keep.txt"
+if env -i PATH="/bin:/usr/bin" HOME="${preserve_tmp}" \
+  PATCHCAGE_HOME="${preserve_tmp}/cache" PATCHCAGE_BIN="${preserve_tmp}/bin" \
+  bash <"${INSTALL}" >"${preserve_tmp}/out" 2>"${preserve_tmp}/err"; then
+  echo 'FAIL existing non-Git source: install should refuse' >&2
+  FAIL=1
+fi
+assert_file 'existing non-Git source preserved' "${preserve_tmp}/cache/src/keep.txt"
+if ! grep -q 'refusing to replace' "${preserve_tmp}/err"; then
+  echo 'FAIL existing non-Git source: wrong failure' >&2
+  FAIL=1
+fi
+rm -rf "${preserve_tmp}"
 
 if [[ "${FAIL}" -ne 0 ]]; then
   echo "test_install.sh: FAILED" >&2

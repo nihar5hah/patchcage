@@ -40,6 +40,9 @@ def _approval_run(
                 "run_id": "abc",
                 "phase": phase,
                 "candidate_sha256": stored,
+                "evidence_sha256": hashlib.sha256(
+                    (json.dumps({"run_id": "abc", "phase": phase, "checks": []}) + "\n").encode()
+                ).hexdigest(),
                 "detail": "ok",
             }
         )
@@ -76,6 +79,27 @@ def test_export_refuses_tampered_patch(tmp_path: Path) -> None:
     (run_dir / "candidate.patch").write_bytes(PATCH + b"tamper\n")
     with pytest.raises(ExportError, match="hash does not match"):
         export_run(run_dir, tmp_path / "out")
+
+
+def test_export_refuses_tampered_evidence_and_changed_review(tmp_path: Path) -> None:
+    run_dir = _approval_run(tmp_path)
+    with pytest.raises(ExportError, match="reviewed patch"):
+        export_run(run_dir, tmp_path / "out", expected_sha256="0" * 64)
+    (run_dir / "evidence.json").write_text("{}")
+    with pytest.raises(ExportError, match="evidence.json hash"):
+        export_run(run_dir, tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_export_refuses_existing_output(tmp_path: Path) -> None:
+    run_dir = _approval_run(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    marker = out / "final.patch"
+    marker.write_text("keep")
+    with pytest.raises(ExportError, match="already exists"):
+        export_run(run_dir, out)
+    assert marker.read_text() == "keep"
 
 
 def test_export_refuses_missing_evidence(tmp_path: Path) -> None:
@@ -153,9 +177,7 @@ def test_export_cli_writes_result_json(tmp_path: Path, capsys: pytest.CaptureFix
     assert payload["diff_ref"] == hashlib.sha256(PATCH).hexdigest()
 
 
-def test_export_cli_refuses_and_exits_1(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_export_cli_refuses_and_exits_1(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     run_dir = _approval_run(tmp_path, phase="cancelled")
     assert main(["export", "--run", str(run_dir), "--out", str(tmp_path / "out")]) == 1
     captured = capsys.readouterr()
@@ -223,9 +245,7 @@ def test_console_script_entry_point() -> None:
     assert match[0].value == "patchcage.engine_cli:main"
 
 
-def test_overlong_commit_exits_cleanly(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_overlong_commit_exits_cleanly(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     scripted = tmp_path / "actions.json"
     scripted.write_text("[]")
     code = main(
@@ -249,9 +269,7 @@ def test_overlong_commit_exits_cleanly(
     assert "invalid run arguments" in capsys.readouterr().err
 
 
-def test_existing_run_dir_is_refused(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_existing_run_dir_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     run_dir = _approval_run(tmp_path)
     scripted = tmp_path / "actions.json"
     scripted.write_text("[]")

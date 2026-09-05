@@ -26,8 +26,15 @@ import {
 	validateHostedBaseUrl,
 	withBundledPromptTemplates,
 } from "../src/core/patchcage-agent-mode.ts";
+import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
 
 describe("decideUnsandboxedDisclosure", () => {
+	it("does not let project config acknowledge host tool access", () => {
+		const storage = new InMemorySettingsStorage();
+		storage.withLock("project", () => JSON.stringify({ unsandboxedDisclosureAcknowledged: true }));
+		const settings = SettingsManager.fromStorage(storage);
+		expect(settings.getUnsandboxedDisclosureAcknowledged()).toBe(false);
+	});
 	it("allows after a saved ack", () => {
 		expect(
 			decideUnsandboxedDisclosure({
@@ -218,14 +225,14 @@ describe("mergeAndWriteModelsJson", () => {
 		expect(raw).not.toContain("sk-");
 	});
 
-	it("replaces the destination when rename hits EEXIST", async () => {
+	it.each(["EEXIST", "EPERM"])("preserves the destination when rename fails with %s", async (code) => {
 		const dir = mkdtempSync(join(tmpdir(), "patchcage-models-"));
 		const path = join(dir, "models.json");
 		writeFileSync(path, `${JSON.stringify({ providers: {} }, null, 2)}\n`);
 		vi.mocked(fsPromises.rename).mockClear();
 		vi.mocked(fsPromises.rename).mockImplementationOnce(async () => {
 			const err = new Error("exists") as NodeJS.ErrnoException;
-			err.code = "EEXIST";
+			err.code = code;
 			throw err;
 		});
 		const result = await mergeAndWriteModelsJson(
@@ -233,12 +240,12 @@ describe("mergeAndWriteModelsJson", () => {
 			"ollama",
 			localPresetProvider(LOCAL_MODEL_PRESETS.ollama, "llama3"),
 		);
-		expect(result).toEqual({ ok: true });
-		expect(fsPromises.rename).toHaveBeenCalledTimes(2);
+		expect(result.ok).toBe(false);
+		expect(fsPromises.rename).toHaveBeenCalledTimes(1);
 		const written = JSON.parse(readFileSync(path, "utf-8")) as {
 			providers: Record<string, { models: Array<{ id: string }> }>;
 		};
-		expect(written.providers.ollama.models.map((m) => m.id)).toEqual(["llama3"]);
+		expect(written.providers).toEqual({});
 	});
 });
 

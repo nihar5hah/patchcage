@@ -45,7 +45,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import { type ChildProcess, spawn } from "child_process";
+import { type ChildProcess, spawn, spawnSync } from "child_process";
 import { runModelPresetOnboarding } from "../../cli/patchcage-onboarding.ts";
 import { showStartupSelector } from "../../cli/startup-ui.ts";
 import {
@@ -104,6 +104,7 @@ import {
 	engineEnv,
 	isRepoRoot,
 	narrateEvent,
+	readCandidateForApproval,
 	resolveEngineBinary,
 	resolveSandboxInputs,
 	runEngine,
@@ -4943,7 +4944,7 @@ export class InteractiveMode {
 			this.showError("a sandbox run is already in progress");
 			return;
 		}
-		const repoRoot = process.cwd();
+		const repoRoot = this.sessionManager.getCwd();
 		if (!isRepoRoot(repoRoot)) {
 			this.showError(`/sandbox must run from a git repository root. ${SANDBOX_USAGE}`);
 			return;
@@ -5030,16 +5031,37 @@ export class InteractiveMode {
 				this.showError(describeFailure(outcome));
 				return;
 			}
+			const digest = outcome.result.diff_ref;
+			let candidate: string;
+			try {
+				candidate = readCandidateForApproval(runDir, digest);
+			} catch (error) {
+				this.showError(error instanceof Error ? error.message : String(error));
+				return;
+			}
 
 			this.ui.stop();
 			let approve: boolean | undefined;
 			try {
+				// Native pager: scroll through the complete patch before choosing Export.
+				// No -R: candidate terminal escape sequences are displayed, not executed.
+				const preview = spawnSync("less", ["-X"], {
+					input: candidate,
+					stdio: ["pipe", "inherit", "inherit"],
+					env: { ...process.env, LESSSECURE: "1", LESS: "" },
+				});
+				if (preview.error || preview.status !== 0) {
+					throw new Error("Could not display candidate diff. Install less and retry; no export was performed.");
+				}
 				approve = await showStartupSelector(
 					this.settingsManager,
-					`Sandbox run ${runId} passed verification (run dir: ${runDir}).\nExport final.patch + evidence.json?`,
+					`Reviewed candidate ${digest}.\n${(outcome.result.checks ?? [])
+						.slice(-4)
+						.map((check) => `${check.name}: ${check.status}`)
+						.join("; ")}\nExport final.patch + evidence.json?`,
 					[
-						{ label: "Export", value: true },
 						{ label: "Discard (keep run dir, write nothing)", value: false },
+						{ label: "Export reviewed patch", value: true },
 					],
 				);
 			} finally {
@@ -5058,7 +5080,7 @@ export class InteractiveMode {
 			const outDir = path.join(repoRoot, EXPORTS_DIR, runId);
 			const exported = await runEngine({
 				bin,
-				args: buildExportArgs(runDir, outDir),
+				args: buildExportArgs(runDir, outDir, digest ?? undefined),
 				cwd: repoRoot,
 				env: engineEnv(process.env, undefined),
 				signal: abort.signal,
@@ -5078,6 +5100,8 @@ export class InteractiveMode {
 			} else {
 				this.showError(describeFailure(exported));
 			}
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
 		} finally {
 			this.sandboxAbort = undefined;
 			this.sandboxChild = undefined;

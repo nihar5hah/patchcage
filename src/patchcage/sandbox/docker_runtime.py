@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 
 import docker
-from docker.errors import APIError, ImageNotFound, NotFound
+from docker.errors import APIError, ImageNotFound
 from docker.models.containers import Container
 
 from patchcage.domain import Finding, ProjectManifest
@@ -124,9 +124,7 @@ class DockerRuntime:
                 volume_name=volume_name,
                 user=RUNTIME_USER,
                 read_only=True,
-                extra_tmpfs={
-                    HOME_DIR: "rw,nosuid,nodev,size=32m,uid=1000,gid=1000,mode=755"
-                },
+                extra_tmpfs={HOME_DIR: "rw,nosuid,nodev,size=32m,uid=1000,gid=1000,mode=755"},
                 drop_capabilities=True,
             )
             self._stage_home_settings(work)
@@ -152,6 +150,26 @@ class DockerRuntime:
     def cleanup(self, sandbox: Sandbox) -> None:
         self.cleanup_run(sandbox.run_id)
 
+    def create_check_container(self, sandbox: Sandbox) -> Container:
+        """A fresh PID namespace and read-only candidate volume for each check."""
+        container = self._run_container(
+            image_id=sandbox.image_id,
+            run_id=sandbox.run_id,
+            role="check",
+            volume_name=sandbox.volume_name,
+            user="0:0",
+            read_only=True,
+            extra_tmpfs={HOME_DIR: "rw,nosuid,nodev,size=32m,mode=755"},
+            drop_capabilities=True,
+            verification=True,
+        )
+        try:
+            self._stage_home_settings(container, user="0:0")
+        except BaseException:
+            container.remove(force=True)
+            raise
+        return container
+
     def cleanup_run(self, run_id: str) -> None:
         filters = {"label": f"{LABEL_RUN}={run_id}"}
         for container in self.client.containers.list(all=True, filters=filters):
@@ -172,6 +190,7 @@ class DockerRuntime:
         read_only: bool,
         extra_tmpfs: dict[str, str],
         drop_capabilities: bool,
+        verification: bool = False,
     ) -> Container:
         try:
             return self.client.containers.run(
@@ -182,12 +201,13 @@ class DockerRuntime:
                 network_mode="none",
                 read_only=read_only,
                 cap_drop=["ALL"] if drop_capabilities else None,
+                cap_add=["SETUID", "SETGID", "KILL"] if verification else None,
                 security_opt=["no-new-privileges:true"] if drop_capabilities else None,
                 mem_limit=MEMORY_LIMIT,
                 nano_cpus=NANO_CPUS,
                 pids_limit=PIDS_LIMIT,
                 tmpfs={"/tmp": "rw,nosuid,nodev,size=64m", **extra_tmpfs},
-                volumes={volume_name: {"bind": WORKSPACE, "mode": "rw"}},
+                volumes={volume_name: {"bind": WORKSPACE, "mode": "ro" if verification else "rw"}},
                 working_dir=WORKSPACE,
                 environment=SANDBOX_ENV,
                 labels=_labels(run_id, role),
@@ -235,13 +255,13 @@ class DockerRuntime:
         seed.put_archive(CONTROL_DIR, _tar_regular_file("state.json", json.dumps(state).encode()))
         self._require_exec(seed, ["chown", "-R", RUNTIME_USER, CONTROL_DIR], user="0:0")
 
-    def _stage_home_settings(self, work: Container) -> None:
+    def _stage_home_settings(self, work: Container, *, user: str = RUNTIME_USER) -> None:
         # Semgrep mkstemps next to SEMGREP_SETTINGS_FILE; /opt is read-only.
-        self._require_exec(work, ["mkdir", "-p", f"{HOME_DIR}/.semgrep"], user=RUNTIME_USER)
+        self._require_exec(work, ["mkdir", "-p", f"{HOME_DIR}/.semgrep"], user=user)
         self._require_exec(
             work,
             ["cp", IMAGE_SEMGREP_SETTINGS, SEMGREP_SETTINGS_FILE],
-            user=RUNTIME_USER,
+            user=user,
         )
 
     def _require_exec(self, container: Container, argv: list[str], *, user: str) -> str:
@@ -256,10 +276,3 @@ class DockerRuntime:
             detail = output.decode("utf-8", errors="replace")
             raise SandboxError("SANDBOX_EXEC_FAILED", f"{argv[0]} failed: {detail[:2_000]}")
         return output.decode("utf-8", errors="replace")
-
-
-def get_container(client: docker.DockerClient, container_id: str) -> Container:
-    try:
-        return client.containers.get(container_id)
-    except NotFound as error:
-        raise SandboxError("CONTAINER_MISSING", f"container gone: {container_id}") from error

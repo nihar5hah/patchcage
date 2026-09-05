@@ -50,6 +50,7 @@ class WorkspaceMCPClient:
                 "PYTHONUNBUFFERED=1",
                 container_id,
                 "python",
+                "-I",
                 "-m",
                 "patchcage_workspace",
             ],
@@ -78,9 +79,12 @@ class WorkspaceMCPClient:
             raise RuntimeError("MCP client is not connected")
         return self._client
 
-    async def list_tools(self) -> list[str]:
+    async def list_tools(self) -> dict[str, dict[str, Any]]:
         result = await self.client.list_tools()
-        return [tool.name for tool in result.tools]
+        return {
+            tool.name: {"description": tool.description or "", "input_schema": tool.input_schema}
+            for tool in result.tools
+        }
 
     async def call(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         result = await self.client.call_tool(name, arguments or {})

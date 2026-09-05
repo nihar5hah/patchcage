@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 
 import httpx
 import pytest
@@ -119,6 +119,27 @@ async def test_openai_compat_parses_valid_action(monkeypatch: pytest.MonkeyPatch
     assert body["messages"][0]["role"] == "system"
 
 
+async def test_endpoint_output_is_bounded_while_streaming() -> None:
+    class Flood(httpx.AsyncByteStream):
+        consumed = 0
+        closed = False
+
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            for _ in range(1000):
+                self.consumed += 1
+                yield b"x" * 8192
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    stream = Flood()
+    gateway = _gateway(lambda _: httpx.Response(200, stream=stream))
+    with pytest.raises(InvalidModelOutput, match="size cap"):
+        await gateway.next_action(_context())
+    assert stream.consumed < 130
+    assert stream.closed
+
+
 def test_openai_compat_headers_merge_extra(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATCHCAGE_MODEL_API_KEY", KEY)
     monkeypatch.setenv(
@@ -160,11 +181,7 @@ async def test_openai_compat_invalid_extra_headers_fail_closed(
     "error_body",
     [
         {"error": "unknown field response_format"},
-        {
-            "error": {
-                "message": "This model does not support json_schema or json_object"
-            }
-        },
+        {"error": {"message": "This model does not support json_schema or json_object"}},
     ],
 )
 async def test_openai_compat_retries_without_json_object_on_400(

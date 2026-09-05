@@ -4,7 +4,17 @@ rules:
     severity: ERROR
     languages:
       - python
-    pattern-regex: "execute\\s*\\(\\s*f[\\\"']"
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-inside: |
+              def search_products($CONNECTION, $QUERY):
+                ...
+          - focus-metavariable: $QUERY
+    pattern-sinks:
+      - patterns:
+          - pattern: $CONNECTION.execute($SQL, ...)
+          - focus-metavariable: $SQL
     metadata:
       cwe:
         - CWE-89

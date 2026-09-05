@@ -96,7 +96,13 @@ class DockerWorkspaceSession:
             raise RuntimeError("session is not open")
         return self._sandbox.baseline_sha
 
-    async def list_tools(self) -> list[str]:
+    @property
+    def image_id(self) -> str:
+        if self._sandbox is None:
+            raise RuntimeError("session is not open")
+        return self._sandbox.image_id
+
+    async def list_tools(self) -> dict[str, dict[str, Any]]:
         if self._mcp is None:
             raise RuntimeError("session is not open")
         return await self._mcp.list_tools()
@@ -109,7 +115,9 @@ class DockerWorkspaceSession:
     def run_host_check(self, name: str) -> CheckResult:
         if self._sandbox is None:
             raise RuntimeError("session is not open")
-        return run_named_check(self._sandbox, name, self._manifest, allow_security=True)
+        return run_named_check(
+            self._sandbox, name, self._manifest, allow_security=True, runtime=self._runtime
+        )
 
 
 def docker_session_factory(

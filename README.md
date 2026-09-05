@@ -11,6 +11,11 @@ This repository is the Python engine plus `patchcage-engine`, the JSON-lines
 subprocess CLI the TypeScript agent under `cli/` drives. You can also call the
 harness from Python (or pytest).
 
+The default interactive agent is **unsandboxed** and can execute local commands.
+The isolation guarantees below apply only to `/sandbox` / `patchcage-engine`,
+not ordinary agent conversations. Its acknowledgement is stored globally;
+repository settings cannot acknowledge that risk on your behalf.
+
 ## What it does
 
 1. **Snapshot** the target git repo (`git archive` of `HEAD`; untracked files
@@ -18,11 +23,14 @@ harness from Python (or pytest).
 2. **Sandbox** the work: no network, uid 1000, read-only root filesystem,
    writable `/workspace` only, MCP tools for inspect/edit.
 3. **Steer the model** through a host-owned loop. The model proposes one
-   action per turn (tool call, patch, or complete). `propose_patch` is **not**
+   action per turn (tool call or patch), with tool argument schemas. `propose_patch` is **not**
    a model-visible tool — patches arrive as envelope actions so the host
    always walks confirmation → apply → host checks → clean replay.
 4. **Verify independently.** Host check order is compile → scanner →
    security oracle → unit. Expectations come from the project manifest.
+   Each check gets a fresh container with a read-only workspace. Candidate
+   code runs unprivileged, separately from the MCP editor and trusted HTTP
+   oracle. Output floods and timeouts terminate the check container.
 5. **Export only after approval.** A passing `run` stops at `awaiting_approval`
    and never writes `final.patch`. Export is a second invocation:
 
@@ -32,7 +40,12 @@ harness from Python (or pytest).
    patchcage-engine export --run <dir> --out <dir>
    ```
 
-   `--out` is a directory that receives `final.patch` and `evidence.json`.
+   `--out` must not exist; it receives `final.patch` and `evidence.json` atomically.
+   The TUI shows the candidate in `less` before asking for approval (default:
+   discard), and pins export to the reviewed SHA-256. Direct callers can use
+   `export --expected-sha256 <digest>`. Evidence records the model, finding,
+   manifest, source/archive and runtime image digests. Export rejects changed
+   evidence or patches; older bundles without these hashes must be rerun.
    `--finding` is Finding YAML/JSON, not free text. `--scripted` replays a
    list of actions (tests/demos) and makes the model flags optional.
    Live model calls send `Authorization: Bearer` from `PATCHCAGE_MODEL_API_KEY`
@@ -46,7 +59,7 @@ harness from Python (or pytest).
 - **One-liner / `scripts/install.sh`:** `curl`, `git`. `uv` is installed if
   missing and fetches Python 3.12. Node 22.19+ is optional (agent TUI).
   Docker is **not** required to install or run agent mode.
-- **Dev / tests / live `/sandbox`:** Python 3.12+, Docker daemon, Git.
+- **Dev / tests / live `/sandbox`:** Python 3.12+, Docker daemon, Git; `less` for TUI approval.
 
 ## Install
 
@@ -73,7 +86,7 @@ Dev editable install (engine + tests):
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -c requirements.lock -e ".[dev,demo]"
 ```
 
 Build the demo runtime image (semgrep, oracle, workspace MCP, Flask) — only
@@ -86,6 +99,19 @@ python scripts/build_runtime_image.py
 That tags `patchcage/python-flask-demo:local` from
 `runtime/python-demo/Dockerfile`. The sandbox **never pulls**; it resolves
 the local tag to a digest and fails if the image is missing.
+Engine runtime dependencies use `requirements.lock`; agent installation uses
+`npm ci`. The image base, OS packages and development tooling are not fully
+locked, so this is not a bit-for-bit reproducible build.
+
+## Verification limits
+
+The supported security demonstration is the packaged Flask SQL-injection
+finding. Its oracle checks randomized injection cases and legitimate searches;
+the scanner follows query data through intermediate variables. This is stronger
+than matching two known payloads, but is not a general proof of security.
+Unit tests that import candidate code are regression signals, not an independent
+adversarial judge. Manifests and runtime images remain trusted inputs. Docker
+is the isolation boundary, not a defense against kernel/container escapes.
 
 ## Tests
 

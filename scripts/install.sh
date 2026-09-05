@@ -44,7 +44,7 @@ path_contains_dir() {
 
 resolve_src() {
   if [[ -n "${PATCHCAGE_SRC:-}" ]]; then
-    SRC="${PATCHCAGE_SRC}"
+    SRC="$(cd "${PATCHCAGE_SRC}" && pwd)" || die "source directory does not exist"
     return
   fi
   local here root
@@ -60,13 +60,16 @@ resolve_src() {
   SRC="${HOME_DIR}/src"
   mkdir -p "${HOME_DIR}"
   if [[ -d "${SRC}/.git" ]]; then
+    [[ -z "$(git -C "${SRC}" status --porcelain)" ]] \
+      || die "refusing to update dirty source tree ${SRC}; commit or stash changes first"
     say "Updating ${SRC} (${REF})…"
     git -C "${SRC}" fetch --depth 1 origin "${REF}"
     git -C "${SRC}" checkout -q FETCH_HEAD \
       || die "could not update ${SRC} (dirty tree?); commit, stash, or remove it and re-run"
   else
+    [[ ! -e "${SRC}" && ! -L "${SRC}" ]] \
+      || die "refusing to replace existing non-Git directory ${SRC}"
     say "Cloning ${REPO} (${REF}) → ${SRC}…"
-    rm -rf "${SRC}"
     git clone --depth 1 --branch "${REF}" "${REPO}" "${SRC}"
   fi
 }
@@ -88,7 +91,8 @@ install_engine() {
   mkdir -p "${BIN_DIR}"
   # --reinstall-package: uv caches directory builds by pyproject mtime, so a
   # re-run after editing src/ would otherwise install stale code.
-  UV_TOOL_BIN_DIR="${BIN_DIR}" uv tool install --force --reinstall-package patchcage "${SRC}"
+  UV_TOOL_BIN_DIR="${BIN_DIR}" uv tool install --force --reinstall-package patchcage \
+    --constraints "${SRC}/requirements.lock" "${SRC}"
   [[ -x "${BIN_DIR}/patchcage-engine" ]] \
     || die "patchcage-engine not found after uv tool install (${BIN_DIR})"
   say "  → ${BIN_DIR}/patchcage-engine"
@@ -118,10 +122,10 @@ install_agent() {
     return
   fi
   need_cmd npm
-  say "Building TypeScript agent (npm install --ignore-scripts && npm run build)…"
+  say "Building TypeScript agent (npm ci --ignore-scripts && npm run build)…"
   (
     cd "${SRC}/cli"
-    npm install --ignore-scripts
+    npm ci --ignore-scripts
     npm run build
   )
   local cli_js="${SRC}/cli/packages/coding-agent/dist/bundle/cli.js"

@@ -40,8 +40,6 @@ ALL_TOOLS = [
     "read_file",
     "search_code",
     "get_repository_status",
-    "run_finding_check",
-    "run_named_check",
     "propose_patch",
     "get_current_diff",
     "discard_patch",
@@ -176,6 +174,7 @@ class FakeSession:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self._diff = ""
         self.baseline_sha = "0" * 40
+        self.image_id = "sha256:" + "a" * 64
         self.closed = False
 
     async def __aenter__(self) -> FakeSession:
@@ -184,8 +183,10 @@ class FakeSession:
     async def __aexit__(self, *args: object) -> None:
         self.closed = True
 
-    async def list_tools(self) -> list[str]:
-        return list(ALL_TOOLS)
+    async def list_tools(self) -> dict[str, dict[str, Any]]:
+        return {
+            name: {"description": name, "input_schema": {"type": "object"}} for name in ALL_TOOLS
+        }
 
     async def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((tool, arguments))
@@ -277,6 +278,60 @@ async def test_happy_path_reaches_awaiting_approval(tmp_path: Path) -> None:
     on_disk = (rig.run_dir / "candidate.patch").read_text()
     assert hashlib.sha256(on_disk.encode()).hexdigest() == state["candidate_sha256"]
     assert all(session.closed for session in rig.sessions)
+    evidence = json.loads((rig.run_dir / "evidence.json").read_text())
+    assert evidence["provenance"]["commit_sha"] == "0" * 40
+    assert evidence["provenance"]["image_id"] == "sha256:" + "a" * 64
+    assert evidence["provenance"]["model_id"] == "scripted"
+    assert gateway.seen_contexts[0].tool_schemas["read_file"]["input_schema"]
+
+
+async def test_large_tool_result_is_bounded_and_run_can_continue(tmp_path: Path) -> None:
+    from patchcage.harness.context import LAST_TOOL_RESULT_LIMIT, OUTCOME_LIMIT, record_turn
+    from patchcage.harness.runner import _cap_outcome
+
+    rig = Rig(
+        ScriptedGateway([_read_action(), _patch_action()]),
+        [_baseline_script() + _verified_script(), _verified_script()],
+        tmp_path,
+    )
+    original_call = rig.sessions[0].call
+
+    async def large_read(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if tool == "read_file":
+            return {"content": "x" * 9000}
+        return await original_call(tool, arguments)
+
+    rig.sessions[0].call = large_read  # type: ignore[method-assign]
+    result = await rig.run()
+    assert result.phase is RunPhase.AWAITING_APPROVAL
+    gateway = rig.runner._gateway
+    assert isinstance(gateway, ScriptedGateway)
+    assert len(gateway.seen_contexts[-1].last_tool_result or "") <= LAST_TOOL_RESULT_LIMIT
+    record = record_turn(_read_action(), _cap_outcome("x" * 2000))
+    assert len(record.outcome) <= OUTCOME_LIMIT
+
+
+async def test_persist_failure_never_reports_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = Rig(
+        ScriptedGateway([_patch_action()]),
+        [_baseline_script() + _verified_script(), _verified_script()],
+        tmp_path,
+    )
+    write = Path.write_text
+
+    def disk_full(path: Path, *args: Any, **kwargs: Any) -> int:
+        if path.name == "evidence.json":
+            raise OSError("disk full")
+        return write(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", disk_full)
+    with pytest.raises(OSError, match="disk full"):
+        await rig.run()
+    assert not (rig.run_dir / "run_state.json").exists()
+    assert not any(event.event_type == "run_finished" for event in rig.events)
 
 
 async def test_model_unavailable_at_preflight(tmp_path: Path) -> None:
@@ -353,9 +408,7 @@ async def test_host_policy_rejects_blocked_patch_then_recovers(tmp_path: Path) -
 
 
 async def test_unknown_tool_is_a_policy_violation(tmp_path: Path) -> None:
-    rogue = ToolAction(
-        type="tool", tool="delete_everything", arguments={}, summary="Chaos."
-    )
+    rogue = ToolAction(type="tool", tool="delete_everything", arguments={}, summary="Chaos.")
     gateway = ScriptedGateway([rogue, _patch_action()])
     rig = Rig(gateway, [_baseline_script() + _verified_script(), _verified_script()], tmp_path)
 
@@ -413,12 +466,10 @@ async def test_verification_failure_after_repair_budget(tmp_path: Path) -> None:
 
 async def test_patch_oscillation_is_blocked(tmp_path: Path) -> None:
     patch_a = (
-        "diff --git a/src/a.py b/src/a.py\n"
-        "--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-a\n+b\n"
+        "diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-a\n+b\n"
     )
     patch_b = (
-        "diff --git a/src/a.py b/src/a.py\n"
-        "--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-a\n+c\n"
+        "diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-a\n+c\n"
     )
     failing = [_ok("compile"), _ok("scanner"), _ok("security"), _failed("unit")]
     gateway = ScriptedGateway(
@@ -435,9 +486,7 @@ async def test_patch_oscillation_is_blocked(tmp_path: Path) -> None:
 
     assert result.phase is RunPhase.AWAITING_APPROVAL
     outcomes = [
-        turn.outcome
-        for context in gateway.seen_contexts
-        for turn in context.recent_actions
+        turn.outcome for context in gateway.seen_contexts for turn in context.recent_actions
     ]
     assert any("oscillat" in outcome for outcome in outcomes)
 
@@ -485,9 +534,7 @@ async def test_model_unavailable_mid_run(tmp_path: Path) -> None:
 async def test_clean_replay_failure_ends_the_run(tmp_path: Path) -> None:
     gateway = ScriptedGateway([_patch_action()])
     replay_fail = [_ok("compile"), _failed("scanner"), _ok("security"), _ok("unit")]
-    rig = Rig(
-        gateway, [_baseline_script() + _verified_script(), replay_fail], tmp_path
-    )
+    rig = Rig(gateway, [_baseline_script() + _verified_script(), replay_fail], tmp_path)
 
     result = await rig.run()
 

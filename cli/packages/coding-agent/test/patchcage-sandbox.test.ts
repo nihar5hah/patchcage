@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
@@ -16,11 +19,30 @@ import {
 	narrateEvent,
 	parseEngineLine,
 	pathUnderRoot,
+	readCandidateForApproval,
 	resolveEngineBinary,
 	resolveSandboxInputs,
 	runEngine,
 	siblingManifest,
 } from "../src/core/patchcage-sandbox.ts";
+
+describe("reviewed candidate", () => {
+	it("pins preview and export to the verified digest", () => {
+		const dir = mkdtempSync(join(tmpdir(), "patchcage-review-"));
+		try {
+			const patch = "--- a/file\n+++ b/file\n";
+			const digest = createHash("sha256").update(patch).digest("hex");
+			writeFileSync(join(dir, "candidate.patch"), patch);
+			expect(readCandidateForApproval(dir, digest)).toBe(patch);
+			expect(buildExportArgs(dir, "/out", digest)).toContain(digest);
+			writeFileSync(join(dir, "candidate.patch"), "changed");
+			expect(() => readCandidateForApproval(dir, digest)).toThrow(/changed/);
+			expect(() => readCandidateForApproval(dir, undefined)).toThrow(/digest/);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
 
 describe("resolveSandboxInputs", () => {
 	const root = "/repo";
@@ -117,20 +139,20 @@ describe("findingFilePath / pathUnderRoot / assertSandboxTarget", () => {
 			assertSandboxTarget("/repo", "/repo/manifests/a.finding.yml", "/repo/manifests/a.yml", {
 				...io,
 				readFile: () => "title: no path\n",
-			}).error,
-		).toMatch(/no file_path/);
+			}),
+		).toMatchObject({ ok: false, error: expect.stringMatching(/no file_path/) });
 		expect(
 			assertSandboxTarget("/repo", "/repo/manifests/a.finding.yml", "/repo/manifests/a.yml", {
 				...io,
 				readFile: () => "file_path: ../etc/passwd\n",
-			}).error,
-		).toMatch(/outside/);
+			}),
+		).toMatchObject({ ok: false, error: expect.stringMatching(/outside/) });
 		expect(
 			assertSandboxTarget("/repo", "/repo/manifests/a.finding.yml", "/repo/manifests/a.yml", {
 				...io,
 				readFile: () => "file_path: src/missing.py\n",
-			}).error,
-		).toMatch(/create_demo_repo/);
+			}),
+		).toMatchObject({ ok: false, error: expect.stringMatching(/create_demo_repo/) });
 	});
 });
 

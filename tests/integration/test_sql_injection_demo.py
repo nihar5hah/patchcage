@@ -128,3 +128,24 @@ def test_oracle_does_not_execute_workspace_sitecustomize(tmp_path: Path) -> None
 
     assert vulnerable.returncode == 1
     assert "PATCHCAGE_VULNERABILITY_REPRODUCED" in vulnerable.stdout
+
+
+def test_filtering_only_known_payloads_is_not_a_fix(tmp_path: Path) -> None:
+    repository = tmp_path / "sql-demo"
+    run([sys.executable, str(CREATE_DEMO), str(repository)], cwd=PROJECT_ROOT)
+    path = repository / "src" / "demo_app" / "search.py"
+    source = path.read_text()
+    source = source.replace(
+        "    return list(connection.execute(f\"SELECT id, name FROM products "
+        "WHERE name LIKE '%{query}%'\"))",
+        "    if query in (\"' OR 1=1 --\", \"' OR '1'='1\"):\n"
+        "        return []\n"
+        "    statement = f\"SELECT id, name FROM products WHERE name LIKE '%{query}%'\"\n"
+        "    return list(connection.execute(statement))",
+    )
+    path.write_text(source)
+    assert "statement =" in source
+    oracle = run_oracle(repository)
+    assert oracle.returncode == 1, oracle.stdout + oracle.stderr
+    if Path(semgrep_binary()).exists():
+        assert semgrep_results(repository), "scanner missed taint through an intermediate variable"

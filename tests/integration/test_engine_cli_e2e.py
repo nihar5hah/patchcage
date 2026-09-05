@@ -134,9 +134,10 @@ def test_scripted_cli_run_then_export(tmp_path: Path, capsys: pytest.CaptureFixt
     capsys.readouterr()
     exported = (out / "final.patch").read_bytes()
     assert exported == (run_dir / "candidate.patch").read_bytes()
-    assert hashlib.sha256(exported).hexdigest() == json.loads(
-        (run_dir / "run_state.json").read_text()
-    )["candidate_sha256"]
+    assert (
+        hashlib.sha256(exported).hexdigest()
+        == json.loads((run_dir / "run_state.json").read_text())["candidate_sha256"]
+    )
     assert (out / "evidence.json").is_file()
 
 
@@ -218,9 +219,7 @@ def test_sigterm_after_investigating_exits_143(tmp_path: Path) -> None:
             '"status":"cancelled"' in line or '"status": "cancelled"' in line
             for line in stdout_lines
         )
-        assert cancelled, (
-            f"missing cancelled result on stdout: {''.join(stdout_lines)!r}"
-        )
+        assert cancelled, f"missing cancelled result on stdout: {''.join(stdout_lines)!r}"
         if (run_dir / "run_state.json").is_file():
             state = json.loads((run_dir / "run_state.json").read_text())
             assert state.get("phase") == "cancelled"

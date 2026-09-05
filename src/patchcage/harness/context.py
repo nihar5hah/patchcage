@@ -9,11 +9,12 @@ full event log.
 from __future__ import annotations
 
 import hashlib
+import json
 import typing
 from collections.abc import Iterable
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from patchcage.domain import (
     AgentAction,
@@ -69,7 +70,15 @@ class AgentContext(StrictModel):
     check_results: tuple[CheckResult, ...] = Field(default=(), max_length=CHECK_RESULTS_LIMIT)
     candidate_patch_hash: str | None = Field(default=None, min_length=PATCH_HASH_LENGTH)
     available_tools: tuple[str, ...] = Field(default=(), max_length=AVAILABLE_TOOLS_LIMIT)
+    tool_schemas: dict[str, dict[str, Any]] = Field(default_factory=dict, max_length=32)
     recent_actions: tuple[TurnRecord, ...] = Field(default=(), max_length=RECENT_ACTIONS_LIMIT)
+
+    @field_validator("tool_schemas")
+    @classmethod
+    def bounded_schemas(cls, schemas: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        if len(json.dumps(schemas).encode()) > 24_000:
+            raise ValueError("tool schemas exceed 24000 bytes")
+        return schemas
 
 
 def build_context(
@@ -82,6 +91,7 @@ def build_context(
     check_results: Iterable[CheckResult] = (),
     candidate_patch_hash: str | None = None,
     available_tools: Iterable[str] = (),
+    tool_schemas: dict[str, dict[str, Any]] | None = None,
     recent_actions: Iterable[TurnRecord] = (),
 ) -> AgentContext:
     """Assemble the context, trimming history to the most recent entries."""
@@ -94,5 +104,6 @@ def build_context(
         check_results=tuple(check_results)[-CHECK_RESULTS_LIMIT:],
         candidate_patch_hash=candidate_patch_hash,
         available_tools=tuple(available_tools),
+        tool_schemas=tool_schemas or {},
         recent_actions=tuple(recent_actions)[-RECENT_ACTIONS_LIMIT:],
     )

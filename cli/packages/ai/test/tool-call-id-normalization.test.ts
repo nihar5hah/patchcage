@@ -12,7 +12,7 @@
 
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { completeSimple, getEnvApiKey, getModel } from "../src/compat.ts";
+import { completeSimple, getEnvApiKey, getModel, getModels } from "../src/compat.ts";
 import type { AssistantMessage, Message, Tool, ToolResultMessage } from "../src/types.ts";
 import { resolveApiKey } from "./oauth.ts";
 
@@ -20,6 +20,9 @@ import { resolveApiKey } from "./oauth.ts";
 const copilotToken = await resolveApiKey("github-copilot");
 const openrouterKey = getEnvApiKey("openrouter");
 const codexToken = await resolveApiKey("openai-codex");
+// This exact model may disappear from the generated catalog. Do not substitute
+// another provider/model in a live regression test.
+const copilotModel = getModels("github-copilot").find((model) => String(model.id) === "gpt-5.2-codex");
 
 // Simple echo tool for testing
 const echoToolSchema = Type.Object({
@@ -42,10 +45,10 @@ const echoTool: Tool<typeof echoToolSchema> = {
  * Both should succeed without "call_id too long" errors.
  */
 describe("Tool Call ID Normalization - Live Handoff", () => {
-	it.skipIf(!copilotToken || !openrouterKey)(
+	it.skipIf(!copilotToken || !openrouterKey || !copilotModel)(
 		"github-copilot -> openrouter should normalize pipe-separated IDs",
 		async () => {
-			const copilotModel = getModel("github-copilot", "gpt-5.2-codex");
+			if (!copilotModel) throw new Error("gpt-5.2-codex is unavailable in the Copilot catalog");
 			const openrouterModel = getModel("openrouter", "openai/gpt-5.2-codex");
 
 			// Step 1: Generate tool call with github-copilot
@@ -112,10 +115,10 @@ describe("Tool Call ID Normalization - Live Handoff", () => {
 		60000,
 	);
 
-	it.skipIf(!copilotToken || !codexToken)(
+	it.skipIf(!copilotToken || !codexToken || !copilotModel)(
 		"github-copilot -> openai-codex should normalize pipe-separated IDs",
 		async () => {
-			const copilotModel = getModel("github-copilot", "gpt-5.2-codex");
+			if (!copilotModel) throw new Error("gpt-5.2-codex is unavailable in the Copilot catalog");
 			const codexModel = getModel("openai-codex", "gpt-5.5");
 
 			// Step 1: Generate tool call with github-copilot

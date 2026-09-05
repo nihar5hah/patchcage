@@ -212,12 +212,6 @@ async function writeModelsJsonAtomic(
 	try {
 		await rename(tmp, path);
 	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "EEXIST" || code === "EPERM") {
-			await unlink(path);
-			await rename(tmp, path);
-			return;
-		}
 		await unlink(tmp).catch(() => {});
 		throw error;
 	}

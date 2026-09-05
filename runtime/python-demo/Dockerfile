@@ -14,6 +14,7 @@ RUN python -m venv /opt/venvs/semgrep \
     && ln -s /opt/venvs/semgrep/bin/semgrep /usr/local/bin/semgrep
 
 COPY pyproject.toml /opt/src/patchcage/pyproject.toml
+COPY requirements.lock /opt/src/patchcage/requirements.lock
 COPY src /opt/src/patchcage/src
 COPY runtime/python-demo/rules /opt/patchcage/rules
 COPY runtime/python-demo/oracles /opt/patchcage/oracles
@@ -22,10 +23,12 @@ COPY runtime/python-demo/semgrep /opt/patchcage/semgrep
 
 RUN python -m venv /opt/venvs/workspace \
     && /opt/venvs/workspace/bin/pip install --no-cache-dir \
+        -c /opt/src/patchcage/requirements.lock \
         'flask==3.1.2' \
         'pytest==8.4.1' \
         '/opt/src/patchcage' \
-    && chmod -R a+rX /opt/patchcage /opt/src/patchcage
+    && chmod -R a+rX /opt/patchcage /opt/src/patchcage \
+    && chmod 700 /opt/patchcage/oracles
 
 ENV PATH="/opt/venvs/workspace/bin:/usr/local/bin:/usr/bin:/bin" \
     HOME=/home/patchcage \
